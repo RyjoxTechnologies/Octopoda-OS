@@ -31,9 +31,12 @@ from typing import Any, Optional, List
 
 # Per-plan rate limits (requests per minute)
 _PLAN_RATE_LIMITS = {
-    "free": 60,       # 1 req/sec — prevents abuse
-    "pro": 300,        # 5 req/sec — production
-    "enterprise": 1000, # ~17 req/sec — enterprise
+    "free": 60,            # 1 req/sec
+    "early_adopter": 300,  # 5 req/sec (grandfathered beta)
+    "pro": 300,            # 5 req/sec
+    "business": 1000,      # ~17 req/sec
+    "scale": 5000,         # ~83 req/sec
+    "enterprise": 10000,   # ~167 req/sec
 }
 _DEFAULT_RPM = int(os.environ.get("SYNRIX_RATE_LIMIT_RPM", "60"))
 

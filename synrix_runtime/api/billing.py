@@ -35,12 +35,13 @@ PRICE_MAP = {
 
 # Plan limits: (max_agents, max_memories, max_extractions_per_month, rate_limit_per_min)
 PLAN_LIMITS = {
-    "free":           (5,     5_000,      100,    100),
-    "early_adopter":  (50,    100_000,    1_000,  300),   # Grandfathered beta users
-    "pro":            (25,    250_000,    10_000,  300),
-    "business":       (75,    1_000_000,  50_000,  1000),
-    "scale":          (None,  5_000_000,  None,    5000),   # None = unlimited
-    "enterprise":     (None,  None,       None,    None),
+    #                  agents  memories    extractions  rate_limit(rpm)
+    "free":           (5,     5_000,      100,    60),
+    "early_adopter":  (50,    100_000,    100,    300),   # Grandfathered beta users
+    "pro":            (25,    250_000,    100,    300),
+    "business":       (75,    1_000_000,  100,    1000),
+    "scale":          (None,  5_000_000,  100,    5000),   # None = unlimited
+    "enterprise":     (None,  None,       100,    None),
 }
 
 # Map Stripe price IDs to plan names
