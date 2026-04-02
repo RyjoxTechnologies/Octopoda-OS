@@ -20,8 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e python-sdk[dev] psycopg2-binary
-          pip install -e .
+          pip install -e ".[dev]" psycopg2-binary
           pip install fastapi uvicorn flask sentence-transformers numpy pytest mcp
 
       - name: Run core tests (SQLite — no DB needed)
@@ -49,6 +48,6 @@ jobs:
             cd /root/octopoda
             git pull origin main
             systemctl restart octopoda-api
-            sleep 15
+            sleep 30
             curl -f http://localhost:8000/health || exit 1
             echo "Deploy successful"
