@@ -18,6 +18,10 @@ Usage:
         "Check if node exists before updating in apply_update_node_cb"
     )
 """
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 import os
 import json
@@ -61,7 +65,7 @@ def record_failure(error_type: str,
         memory_path = os.path.expanduser("~/.cursor_ai_memory.lattice")
     
     if RawSynrixBackend is None:
-        print(f"WARNING: RawSynrixBackend not available, cannot record failure: {error_type}")
+        logger.warning(f"WARNING: RawSynrixBackend not available, cannot record failure: {error_type}")
         return False
     
     backend = None
@@ -104,7 +108,7 @@ def record_failure(error_type: str,
         return success
     
     except Exception as e:
-        print(f"ERROR: Failed to record failure {error_type}: {e}")
+        logger.error(f"ERROR: Failed to record failure {error_type}: {e}")
         return False
     
     finally:
@@ -149,7 +153,7 @@ def get_failures_by_type(error_type: str, memory_path: Optional[str] = None) -> 
         return result
     
     except Exception as e:
-        print(f"ERROR: Failed to get failures: {e}")
+        logger.error(f"ERROR: Failed to get failures: {e}")
         return []
     
     finally:
@@ -197,7 +201,7 @@ def get_all_failures(memory_path: Optional[str] = None, limit: int = 50) -> list
         return result
     
     except Exception as e:
-        print(f"ERROR: Failed to get failures: {e}")
+        logger.error(f"ERROR: Failed to get failures: {e}")
         return []
     
     finally:
@@ -207,7 +211,7 @@ def get_all_failures(memory_path: Optional[str] = None, limit: int = 50) -> list
 
 if __name__ == "__main__":
     # Test failure recording
-    print("Testing failure tracker...")
+    logger.error("Testing failure tracker...")
     
     # Record a test failure
     success = record_failure(
@@ -217,10 +221,10 @@ if __name__ == "__main__":
         "Don't do this in production"
     )
     
-    print(f"Recorded test failure: {success}")
+    logger.error(f"Recorded test failure: {success}")
     
     # Get all failures
     failures = get_all_failures(limit=10)
-    print(f"\nFound {len(failures)} failures:")
+    logger.error(f"\nFound {len(failures)} failures:")
     for f in failures[:5]:
-        print(f"  - {f['name']}: {f.get('data', {}).get('error', 'N/A')[:50]}...")
+        logger.error(f"  - {f['name']}: {f.get('data', {}).get('error', 'N/A')[:50]}...")

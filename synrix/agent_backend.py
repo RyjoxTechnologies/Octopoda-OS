@@ -22,6 +22,10 @@ Usage:
     backend.write("task:fix_bug", {"error": "SyntaxError", "fix": "add colon"})
     memory = backend.read("task:fix_bug")
 """
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 import os
 import json
@@ -245,7 +249,7 @@ class SynrixAgentBackend:
             node_id = self.client.add_node(**kwargs)
             return node_id
         except Exception as e:
-            print(f"Warning: Failed to write to SYNRIX ({self.backend_type}): {e}")
+            logger.warning(f"Failed to write to SYNRIX ({self.backend_type}): {e}")
             return None
 
     def read(self, key: str) -> Optional[Dict[str, Any]]:
@@ -327,7 +331,7 @@ class SynrixAgentBackend:
                 parsed.append(entry)
             return parsed
         except Exception as e:
-            print(f"Warning: Failed to query SYNRIX ({self.backend_type}): {e}")
+            logger.warning(f"Failed to query SYNRIX ({self.backend_type}): {e}")
             return []
 
     def get_task_memory(self, task_type: str, limit: int = 20) -> Dict[str, Any]:
@@ -467,7 +471,7 @@ class SynrixAgentBackend:
                 parsed.append(entry)
             return parsed
         except Exception as e:
-            print(f"Warning: Semantic search failed ({self.backend_type}): {e}")
+            logger.warning(f"Semantic search failed ({self.backend_type}): {e}")
             return []
 
     def get_history(self, key: str) -> List[Dict[str, Any]]:
@@ -507,7 +511,7 @@ class SynrixAgentBackend:
                 })
             return parsed
         except Exception as e:
-            print(f"Warning: History query failed ({self.backend_type}): {e}")
+            logger.warning(f"History query failed ({self.backend_type}): {e}")
             return []
 
     def add_entity(

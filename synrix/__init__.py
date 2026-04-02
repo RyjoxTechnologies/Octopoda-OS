@@ -4,6 +4,10 @@ SYNRIX Python Client SDK
 Python client library for interacting with the SYNRIX knowledge system.
 Requires connection to SYNRIX server (hosted service or self-hosted binary).
 """
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 __version__ = "3.0.3"
 
@@ -66,7 +70,7 @@ def init():
     engine_found, engine_path, error_msg = _engine_init()
     
     if not engine_found:
-        print(error_msg)
+        logger.error(error_msg)
         return False
     
     return True

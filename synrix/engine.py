@@ -3,6 +3,10 @@ SYNRIX Engine Management
 
 Handles engine detection, installation, and management.
 """
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 import os
 import sys
@@ -135,8 +139,8 @@ def download_engine(progress: bool = True) -> Path:
         )
     download_url = f"{ENGINE_BASE_URL.rstrip('/')}/{engine_filename}"
     
-    print(f"Downloading SYNRIX engine for {platform_str}...")
-    print(f"URL: {download_url}")
+    logger.info(f"Downloading SYNRIX engine for {platform_str}...")
+    logger.info(f"URL: {download_url}")
     
     try:
         response = requests.get(download_url, stream=True, timeout=30)
@@ -152,7 +156,7 @@ def download_engine(progress: bool = True) -> Path:
                     downloaded += len(chunk)
                     if progress and total_size > 0:
                         percent = (downloaded / total_size) * 100
-                        print(f"\rProgress: {percent:.1f}% ({downloaded}/{total_size} bytes)", end="", flush=True)
+                        logger.info(f"\rProgress: {percent:.1f}% ({downloaded}/{total_size} bytes)", end="", flush=True)
         
         if progress:
             print()  # New line after progress
@@ -161,7 +165,7 @@ def download_engine(progress: bool = True) -> Path:
         if not platform_str.startswith("windows"):
             os.chmod(engine_path, 0o755)
         
-        print(f"✅ Engine downloaded to: {engine_path}")
+        logger.info(f"✅ Engine downloaded to: {engine_path}")
         return engine_path
         
     except requests.exceptions.RequestException as e:
@@ -203,12 +207,12 @@ def install_engine(force: bool = False) -> Path:
     
     # Check if already installed
     if engine_path.exists() and not force:
-        print(f"Engine already installed at: {engine_path}")
+        logger.info(f"Engine already installed at: {engine_path}")
         if verify_engine(engine_path):
-            print("✅ Engine verified and ready to use")
+            logger.info("✅ Engine verified and ready to use")
             return engine_path
         else:
-            print("⚠️  Existing engine failed verification, re-downloading...")
+            logger.error("⚠️  Existing engine failed verification, re-downloading...")
             engine_path.unlink()
     
     # Download engine
@@ -217,7 +221,7 @@ def install_engine(force: bool = False) -> Path:
         
         # Verify
         if verify_engine(engine_path):
-            print("✅ Engine installed and verified")
+            logger.info("✅ Engine installed and verified")
             return engine_path
         else:
             raise SynrixError("Downloaded engine failed verification")

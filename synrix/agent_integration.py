@@ -19,6 +19,10 @@ Usage:
     from synrix.agent_integration import store_failure
     store_failure("error_type", error, context, avoid)
 """
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 import os
 import sys
@@ -80,7 +84,7 @@ def check_synrix_before_generate() -> Dict[str, Any]:
         return context
     except Exception as e:
         # Fail gracefully - don't break workflow if SYNRIX fails
-        print(f"SYNRIX check failed: {e}", file=sys.stderr)
+        logger.error(f"SYNRIX check failed: {e}", file=sys.stderr)
         return {"constraints": [], "patterns": [], "failures": []}
 
 
@@ -120,7 +124,7 @@ def store_success_pattern(
         memory.store_pattern(pattern_name, code, context, success_rate, metadata)
         return True
     except Exception as e:
-        print(f"SYNRIX store pattern failed: {e}", file=sys.stderr)
+        logger.error(f"SYNRIX store pattern failed: {e}", file=sys.stderr)
         return False
 
 
@@ -158,7 +162,7 @@ def store_failure(
         memory.store_failure(error_type, error, context, avoid)
         return True
     except Exception as e:
-        print(f"SYNRIX store failure failed: {e}", file=sys.stderr)
+        logger.error(f"SYNRIX store failure failed: {e}", file=sys.stderr)
         return False
 
 
@@ -189,7 +193,7 @@ def store_constraint(rule_name: str, description: str) -> bool:
         memory.store_constraint(rule_name, description)
         return True
     except Exception as e:
-        print(f"SYNRIX store constraint failed: {e}", file=sys.stderr)
+        logger.error(f"SYNRIX store constraint failed: {e}", file=sys.stderr)
         return False
 
 
@@ -228,22 +232,22 @@ if __name__ == "__main__":
     import sys
     
     if len(sys.argv) < 2:
-        print("Usage: agent_integration.py <command> [args...]")
+        logger.info("Usage: agent_integration.py <command> [args...]")
         sys.exit(1)
     
     command = sys.argv[1]
     
     if command == "check":
         context = check_synrix_before_generate()
-        print(json.dumps(context, indent=2))
+        logger.info(json.dumps(context, indent=2))
     
     elif command == "stats":
         stats = get_synrix_stats()
-        print(json.dumps(stats, indent=2))
+        logger.info(json.dumps(stats, indent=2))
     
     elif command == "store_pattern":
         if len(sys.argv) < 4:
-            print("Usage: store_pattern <name> <code> [context] [success_rate]")
+            logger.info("Usage: store_pattern <name> <code> [context] [success_rate]")
             sys.exit(1)
         result = store_success_pattern(
             sys.argv[2],
@@ -251,11 +255,11 @@ if __name__ == "__main__":
             sys.argv[4] if len(sys.argv) > 4 else "",
             float(sys.argv[5]) if len(sys.argv) > 5 else 1.0
         )
-        print(json.dumps({"success": result}))
+        logger.info(json.dumps({"success": result}))
     
     elif command == "store_failure":
         if len(sys.argv) < 4:
-            print("Usage: store_failure <type> <error> [context] [avoid]")
+            logger.error("Usage: store_failure <type> <error> [context] [avoid]")
             sys.exit(1)
         result = store_failure(
             sys.argv[2],
@@ -263,15 +267,15 @@ if __name__ == "__main__":
             sys.argv[4] if len(sys.argv) > 4 else "",
             sys.argv[5] if len(sys.argv) > 5 else ""
         )
-        print(json.dumps({"success": result}))
+        logger.info(json.dumps({"success": result}))
     
     elif command == "store_constraint":
         if len(sys.argv) < 4:
-            print("Usage: store_constraint <name> <description>")
+            logger.info("Usage: store_constraint <name> <description>")
             sys.exit(1)
         result = store_constraint(sys.argv[2], sys.argv[3])
-        print(json.dumps({"success": result}))
+        logger.info(json.dumps({"success": result}))
     
     else:
-        print(f"Unknown command: {command}")
+        logger.info(f"Unknown command: {command}")
         sys.exit(1)

@@ -225,7 +225,7 @@ class AgentRuntime:
         self._is_cloud = backend_override is not None and tenant_id != "_default"
 
         mode = "cloud" if self._is_cloud else "local"
-        print(f"[{agent_id}] Runtime connected in {connect_us:.1f}us | type={agent_type} | mode={mode}")
+        logger.info(f"[{agent_id}] Runtime connected in {connect_us:.1f}us | type={agent_type} | mode={mode}")
         if not self._is_cloud:
             logger.info("Running in local mode. For cloud dashboard, shared memory across machines, "
                        "and Brain intelligence: https://octopodas.com")
@@ -2518,4 +2518,4 @@ class AgentRuntime:
         except Exception:
             pass
 
-        print(f"[{self.agent_id}] Shutdown complete | writes={self._write_count} reads={self._read_count}")
+        logger.info(f"[{self.agent_id}] Shutdown complete | writes={self._write_count} reads={self._read_count}")

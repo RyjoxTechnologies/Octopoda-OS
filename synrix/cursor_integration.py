@@ -15,6 +15,10 @@ Example usage in Cursor:
     # Query related memories
     all_fixes = synrix.search("fix_")
 """
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 import os
 import sys
@@ -62,7 +66,7 @@ class SynrixMemory:
             node_id = backend.write(key, value, metadata)
             return node_id is not None
         except Exception as e:
-            print(f"Warning: Failed to remember '{key}': {e}", file=sys.stderr)
+            logger.warning(f"Failed to remember '{key}': {e}", file=sys.stderr)
             return False
     
     def recall(self, key: str) -> Optional[Any]:
@@ -84,7 +88,7 @@ class SynrixMemory:
                 return value
             return None
         except Exception as e:
-            print(f"Warning: Failed to recall '{key}': {e}", file=sys.stderr)
+            logger.warning(f"Failed to recall '{key}': {e}", file=sys.stderr)
             return None
     
     def search(self, prefix: str, limit: int = 100) -> List[Dict[str, Any]]:
@@ -103,7 +107,7 @@ class SynrixMemory:
             results = backend.query_prefix(prefix, limit=limit)
             return results
         except Exception as e:
-            print(f"Warning: Failed to search '{prefix}': {e}", file=sys.stderr)
+            logger.warning(f"Failed to search '{prefix}': {e}", file=sys.stderr)
             return []
     
     def get_task_memory(self, task_type: str, limit: int = 20) -> Dict[str, Any]:
@@ -121,7 +125,7 @@ class SynrixMemory:
             backend = _get_backend()
             return backend.get_task_memory(task_type, limit=limit)
         except Exception as e:
-            print(f"Warning: Failed to get task memory for '{task_type}': {e}", file=sys.stderr)
+            logger.warning(f"Failed to get task memory for '{task_type}': {e}", file=sys.stderr)
             return {
                 "last_attempts": [],
                 "failures": [],

@@ -18,6 +18,10 @@ Usage:
     node_id = client.add_node("agents:a1:key", '{"value": "hello"}', collection="agent_memory")
     results = client.query_prefix("agents:a1:", collection="agent_memory")
 """
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 import os
 import json
@@ -497,7 +501,7 @@ class SynrixSQLiteClient:
                 return node_id
             except Exception as e:
                 conn.rollback()
-                print(f"Warning: SQLite write failed: {e}")
+                logger.warning(f"SQLite write failed: {e}")
                 return None
 
     def query_prefix(

@@ -11,6 +11,10 @@ Usage:
     print(mem.recall("user_name"))   # "Alice"
     print(mem.search("user_"))       # [{"key": "user_name", "value": "Alice"}]
 """
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 import json
 import time

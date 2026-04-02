@@ -20,6 +20,10 @@ Usage:
     #     'recent_tasks': [...]
     # }
 """
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 import os
 import json
@@ -288,7 +292,7 @@ def find_by_tag(tag: str, memory_path: Optional[str] = None, limit: int = 50) ->
         return result[:limit]
     
     except Exception as e:
-        print(f"ERROR: Failed to find by tag: {e}")
+        logger.error(f"ERROR: Failed to find by tag: {e}")
         return []
     
     finally:
@@ -355,8 +359,8 @@ def format_context_summary(context: Dict) -> str:
 if __name__ == "__main__":
     # Test context restoration
     context = restore_agent_context()
-    print(format_context_summary(context))
+    logger.info(format_context_summary(context))
     
     # Print detailed stats
-    print("\n=== Detailed Stats ===")
-    print(json.dumps(context['stats'], indent=2))
+    logger.info("\n=== Detailed Stats ===")
+    logger.info(json.dumps(context['stats'], indent=2))

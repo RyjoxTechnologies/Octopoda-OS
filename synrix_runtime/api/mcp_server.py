@@ -24,6 +24,10 @@ Run standalone:
     OCTOPODA_API_KEY=sk-octopoda-... octopoda-mcp
     OCTOPODA_API_KEY=sk-octopoda-... python -m synrix_runtime.api.mcp_server
 """
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 import os
 import json
@@ -782,9 +786,9 @@ def main():
     api_key = os.environ.get("OCTOPODA_API_KEY", "")
     if not api_key:
         import sys
-        print("ERROR: OCTOPODA_API_KEY not set.", file=sys.stderr)
-        print("Get your free key at https://octopodas.com", file=sys.stderr)
-        print("Then: OCTOPODA_API_KEY=sk-octopoda-... octopoda-mcp", file=sys.stderr)
+        logger.error("ERROR: OCTOPODA_API_KEY not set.", file=sys.stderr)
+        logger.info("Get your free key at https://octopodas.com", file=sys.stderr)
+        logger.info("Then: OCTOPODA_API_KEY=sk-octopoda-... octopoda-mcp", file=sys.stderr)
         sys.exit(1)
     mcp.run(transport="stdio")
 
