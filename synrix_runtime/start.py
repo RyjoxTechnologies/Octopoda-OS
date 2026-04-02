@@ -30,7 +30,7 @@ if os.path.isfile(_env_file):
 
 STARTUP_BANNER = """
  +=======================================================+
- |          OCTOPODA AGENT RUNTIME v1.0.0                |
+ |          OCTOPODA AGENT RUNTIME v3.0.3                |
  |          Persistent Memory Kernel for AI Agents       |
  +=======================================================+
  |  Backend:            + {backend:<28s}|
@@ -118,7 +118,10 @@ def main():
                 app.run(host="0.0.0.0", port=config.dashboard_port, debug=False, threaded=True, use_reloader=False)
             except Exception as e:
                 _dash_error.append(str(e))
-                print(f"\n  [DASHBOARD ERROR] Failed to start: {e}")
+                if "flask" in str(e).lower():
+                    print(f"\n  [DASHBOARD] Flask not installed. Run: pip install octopoda[server]")
+                else:
+                    print(f"\n  [DASHBOARD ERROR] Failed to start: {e}")
 
         dash_thread = threading.Thread(target=start_dashboard, daemon=True)
         dash_thread.start()

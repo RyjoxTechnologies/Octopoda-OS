@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Octopoda Full System Audit
 ===========================

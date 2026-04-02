@@ -31,6 +31,10 @@ _pending_lock = threading.Lock()
 _repeat_tracker: dict = {}  # agent_id -> [{"embedding": ndarray, "time": float, "key": str}, ...]
 _repeat_tracker_lock = threading.Lock()
 
+# Lightweight write tracker (no embeddings needed) — always active for loop detection
+_write_tracker: dict = {}  # agent_id -> [{"time": float, "key": str}, ...]
+_write_tracker_lock = threading.Lock()
+
 
 @dataclass
 class MemoryResult:
@@ -73,6 +77,7 @@ class SearchResult:
     items: list
     count: int
     latency_us: float
+    note: Optional[str] = None
 
     def __iter__(self):
         return iter(self.items)
@@ -265,6 +270,17 @@ class AgentRuntime:
             except Exception:
                 pass
 
+        # Always track writes for loop detection (no AI deps required)
+        tracker_key = f"{self.tenant_id}:{self.agent_id}"
+        now = time.time()
+        with _write_tracker_lock:
+            wt_entries = _write_tracker.get(tracker_key, [])
+            wt_entries = [e for e in wt_entries if e["time"] >= (now - 300)]
+            wt_entries.append({"time": now, "key": key})
+            if len(wt_entries) > 50:
+                wt_entries = wt_entries[-50:]
+            _write_tracker[tracker_key] = wt_entries
+
         # Write to DB with embedding (searchable immediately)
         start = time.perf_counter_ns()
         node_id = self.backend.write(
@@ -290,13 +306,13 @@ class AgentRuntime:
                     from synrix.fact_extractor import FactExtractor
                     from synrix.embeddings import EmbeddingModel
                     safe_config = {k: ("***" if "key" in k.lower() or "secret" in k.lower() else v) for k, v in (llm_config or {}).items()}
-                    logger.info("Fact extraction starting for node %s (config=%s)", nid, safe_config)
+                    logger.debug("Fact extraction starting for node %s (config=%s)", nid, safe_config)
                     fact_extractor = FactExtractor.get(config=llm_config)
                     emb_model = EmbeddingModel.get()
                     if fact_extractor is None:
-                        logger.warning("FactExtractor.get() returned None — no LLM available")
+                        logger.debug("FactExtractor.get() returned None — no LLM configured")
                     if emb_model is None:
-                        logger.warning("EmbeddingModel.get() returned None")
+                        logger.debug("EmbeddingModel.get() returned None")
                     if fact_extractor and emb_model:
                         fact_result = fact_extractor.extract_facts(text)
                         logger.info("Fact extraction result: %d facts, used_llm=%s, provider=%s, time=%.0fms",
@@ -497,6 +513,18 @@ class AgentRuntime:
         Requires sentence-transformers to be installed.
         Returns empty results if embeddings are not available.
         """
+        # Check if embeddings are available before searching
+        try:
+            from synrix.embeddings import EmbeddingModel
+            if not EmbeddingModel.get():
+                logger.warning("Semantic search requires embeddings: pip install octopoda[ai]")
+                return SearchResult(items=[], count=0, latency_us=0,
+                                    note="Semantic search requires embeddings. Install with: pip install octopoda[ai]")
+        except ImportError:
+            logger.warning("Semantic search requires embeddings: pip install octopoda[ai]")
+            return SearchResult(items=[], count=0, latency_us=0,
+                                note="Semantic search requires embeddings. Install with: pip install octopoda[ai]")
+
         start = time.perf_counter_ns()
         # Search scoped to this agent's data only via SQL prefix filter
         agent_prefix = f"agents:{self.agent_id}:"
@@ -978,11 +1006,19 @@ class AgentRuntime:
                             "action": "Monitor — may resolve naturally or escalate.",
                         })
             except ImportError:
-                pass
+                signals.append({
+                    "type": "write_similarity",
+                    "severity": "info",
+                    "detail": "Semantic similarity detection requires: pip install octopoda[ai]",
+                    "suggestion": "Install AI extras for full loop detection (embedding-based write similarity).",
+                    "action": "pip install octopoda[ai]",
+                })
 
-        # --- Signal 2: Key overwrite frequency ---
-        with _repeat_tracker_lock:
-            recent_keys = [e.get("key", "") for e in recent_entries]
+        # --- Signal 2: Key overwrite frequency (works WITHOUT AI deps) ---
+        with _write_tracker_lock:
+            wt_entries = _write_tracker.get(tracker_key, [])
+            wt_recent = [e for e in wt_entries if e["time"] >= (now - 300)]
+        recent_keys = [e.get("key", "") for e in wt_recent]
         key_counts = {}
         for k in recent_keys:
             key_counts[k] = key_counts.get(k, 0) + 1
@@ -1000,10 +1036,9 @@ class AgentRuntime:
                 "action": f"Check the agent's logic around key '{worst_key}'. Consider using remember_with_ttl() for temporary values.",
             })
 
-        # --- Signal 3: Write velocity (burst detection) ---
-        with _repeat_tracker_lock:
-            last_60s = [e for e in entries if e["time"] >= (now - 60)]
-            last_300s = [e for e in entries if e["time"] >= (now - 300)]
+        # --- Signal 3: Write velocity (burst detection, works WITHOUT AI deps) ---
+        last_60s = [e for e in wt_recent if e["time"] >= (now - 60)]
+        last_300s = wt_recent
         writes_per_minute = len(last_60s)
         writes_per_5min = len(last_300s)
         if writes_per_minute >= 10:
@@ -1288,23 +1323,10 @@ class AgentRuntime:
             "created_at": time.time(),
         }
         size_bytes = len(json.dumps(snapshot_payload).encode())
-        try:
-            raw_client = self.backend.client
-            raw_client.add_node(
-                name=f"agents:{self.agent_id}:snapshots:{label}",
-                data=json.dumps(snapshot_payload),
-                collection=self.backend.collection,
-                node_type="snapshot",
-                metadata={"type": "snapshot", "agent_id": self.agent_id},
-                _background=True,
-            )
-        except Exception as e:
-            logger.warning("Snapshot write with _background failed (%s), retrying normal", e)
-            self.backend.write(
-                f"agents:{self.agent_id}:snapshots:{label}",
-                snapshot_payload,
-                metadata={"type": "snapshot", "agent_id": self.agent_id}
-            )
+        self.backend.write(
+            f"agents:{self.agent_id}:snapshots:{label}",
+            snapshot_payload,
+        )
         latency_us = (time.perf_counter_ns() - start) / 1000
 
         if self._metrics:
@@ -1362,23 +1384,10 @@ class AgentRuntime:
         except Exception:
             pass
 
-        # Restore each key — use raw client with _background=True to avoid
-        # blocking on _write_lock during heavy enrichment periods
+        # Restore each key
         restored = 0
-        raw_client = self.backend.client
         for key, value in keys_data.items():
-            try:
-                raw_client.add_node(
-                    name=key,
-                    data=json.dumps(value) if isinstance(value, dict) else json.dumps({"value": value}),
-                    collection=self.backend.collection,
-                    node_type="memory",
-                    metadata={"type": "restored", "agent_id": self.agent_id},
-                    _background=True,
-                )
-            except Exception:
-                # Fallback to normal write if _background fails
-                self.backend.write(key, value, metadata={"type": "restored", "agent_id": self.agent_id})
+            self.backend.write(key, value)
             restored += 1
 
         recovery_us = (time.perf_counter_ns() - start) / 1000
@@ -1758,9 +1767,9 @@ class AgentRuntime:
             from synrix.embeddings import EmbeddingModel
             emb_model = EmbeddingModel.get()
             if not emb_model:
-                return {"error": "Embedding model not available", "consolidated": 0}
+                return {"error": "Embedding model not available", "consolidated": 0, "dry_run": dry_run}
         except ImportError:
-            return {"error": "numpy or embeddings not installed", "consolidated": 0}
+            return {"error": "numpy or embeddings not installed — pip install octopoda[ai]", "consolidated": 0, "dry_run": dry_run}
 
         prefix = f"agents:{self.agent_id}:"
         all_items = self.backend.query_prefix(prefix, limit=10000)
