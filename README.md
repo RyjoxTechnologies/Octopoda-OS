@@ -12,6 +12,10 @@ Persistent memory, semantic search, loop detection, agent messaging, crash recov
 
 ![Octopoda Dashboard](docs/images/dashboard-overview.png)
 
+Track latency, error rates, memory usage, and health scores per agent. Catch performance regressions before they hit production.
+
+![Agent Performance](docs/images/dashboard-performance.png)
+
 ---
 
 ## Quick Start
