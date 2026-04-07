@@ -588,7 +588,7 @@ def _verify_code(email: str, code: str) -> bool:
 # Resend email integration
 # ---------------------------------------------------------------------------
 _RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-_RESEND_FROM = os.environ.get("RESEND_FROM_EMAIL", "Octopoda <noreply@octopodas.com>")
+_RESEND_FROM = os.environ.get("RESEND_FROM_EMAIL", "Octopoda <noreply@send.octopodas.com>")
 
 def _send_verification_email(email: str, first_name: str, code: str):
     """Send a verification code email via Resend."""
