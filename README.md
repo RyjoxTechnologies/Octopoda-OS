@@ -16,6 +16,10 @@ Track latency, error rates, memory usage, and health scores per agent. Catch per
 
 ![Agent Performance](docs/images/dashboard-performance.png)
 
+Browse every memory an agent has stored, search by prefix, and inspect the full version history of any key. See exactly how a memory changed over time — useful for debugging agent behavior and understanding why an agent made a decision.
+
+![Memory Explorer](docs/images/memory-explorer.png)
+
 ---
 
 ## Quick Start
