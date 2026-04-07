@@ -214,8 +214,8 @@ The skill limits to max 2 memory calls per turn. If excessive:
 ## Links
 
 - [Octopoda — Get your API key](https://octopodas.com)
-- [GitHub](https://github.com/octopoda-memory/octopoda)
-- [Report issues](https://github.com/octopoda-memory/octopoda/issues)
+- [GitHub](https://github.com/RyjoxTechnologies/Octopoda-OS)
+- [Report issues](https://github.com/RyjoxTechnologies/Octopoda-OS/issues)
 
 ## License
 
