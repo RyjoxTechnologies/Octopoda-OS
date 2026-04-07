@@ -2,7 +2,7 @@
 
 ### The open-source memory operating system for AI agents.
 
-Persistent memory, semantic search, loop detection, agent messaging, crash recovery, and real-time observability. Local-first. Works offline. Optionally sync to cloud.
+Give your agents persistent memory, loop detection, audit trails, and real-time observability. Everything works automatically once you create an agent.
 
 [![PyPI](https://img.shields.io/pypi/v/octopoda)](https://pypi.org/project/octopoda/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -12,11 +12,11 @@ Persistent memory, semantic search, loop detection, agent messaging, crash recov
 
 ![Octopoda Dashboard](docs/images/dashboard-overview.png)
 
-Track latency, error rates, memory usage, and health scores per agent. Catch performance regressions before they hit production.
+Track latency, error rates, memory usage, and health scores per agent.
 
 ![Agent Performance](docs/images/dashboard-performance.png)
 
-Browse every memory an agent has stored, search by prefix, and inspect the full version history of any key. See exactly how a memory changed over time — useful for debugging agent behavior and understanding why an agent made a decision.
+Browse every memory, inspect version history, and see exactly how an agent's knowledge changed over time.
 
 ![Memory Explorer](docs/images/memory-explorer.png)
 
@@ -32,85 +32,84 @@ pip install octopoda
 from octopoda import AgentRuntime
 
 agent = AgentRuntime("my_agent")
+```
+
+That's it. Your agent now has persistent memory, loop detection, crash recovery, and an audit trail. Everything runs automatically in the background. Memory survives restarts, crashes, and deployments.
+
+Store and retrieve memories when you need to:
+
+```python
 agent.remember("key", "value")
 agent.recall("key")
 ```
 
-That's it. Your agent now has persistent memory. It survives restarts, crashes, and deployments. Works locally with SQLite — no account required.
-
-Want cloud sync and the dashboard? Just set an API key:
+Want the cloud dashboard? Just add an API key:
 
 ```bash
-export OCTOPODA_API_KEY=sk-octopoda-...   # Get yours free at octopodas.com
+export OCTOPODA_API_KEY=sk-octopoda-...   # Free at octopodas.com
 ```
 
-Same code, now backed by PostgreSQL with real-time monitoring and multi-agent observability.
+Same code, now with real-time monitoring, semantic search, and multi-agent observability.
 
 ---
 
-## Why Octopoda
+## What You Get Out of the Box
 
-AI agents forget everything between sessions. Every framework treats memory as disposable. Octopoda gives your agents:
+When you create an `AgentRuntime`, all of this is handled for you automatically:
 
-1. **Persistent memory** that survives restarts and crashes
-2. **Semantic search** to find memories by meaning, not just exact keys
-3. **Loop detection** that catches agents stuck in repetitive patterns
-4. **Agent messaging** for multi-agent coordination
-5. **Audit trail** so you can see every decision an agent made and why
-6. **Real-time dashboard** to monitor what your agents know and how they're performing
+- **Persistent memory** — everything your agent stores survives restarts and crashes
+- **Loop detection** — catches agents stuck in repetitive patterns before they burn tokens
+- **Audit trail** — every decision, every write, every action is logged
+- **Crash recovery** — automatic heartbeat monitoring with snapshot/restore
+- **Health scoring** — continuous monitoring of memory quality and agent performance
+- **Heartbeats** — background thread tracks agent liveness
+
+You don't need to configure any of this. It just works.
 
 ---
 
-## Features
+## When You Need More Control
 
-Everything works out of the box with `pip install octopoda`.
+Everything below is optional. Use it when you need it.
 
 ### Semantic Search
 
+Find memories by meaning, not just exact keys.
+
 ```python
 agent.remember("bio", "Alice is a vegetarian living in London")
-agent.remember("work", "Alice is a senior engineer at Google")
-
-results = agent.recall_similar("where does the user work?")
-# Returns: "Alice is a senior engineer at Google" (score: 0.82)
-```
-
-### Loop Detection
-
-Five signals: write similarity, key overwrites, velocity spikes, alert frequency, goal drift.
-
-```python
-status = agent.get_loop_status()
-# {"severity": "orange", "score": 45, "signals": [...]}
-# Every signal tells you what's wrong and exactly what to do.
+results = agent.recall_similar("what does the user eat?")
+# Returns the right memory with a similarity score
 ```
 
 ### Agent Messaging
 
+Agents can talk to each other through shared inboxes.
+
 ```python
 agent_a.send_message("agent_b", "Found a bug in auth", message_type="alert")
 messages = agent_b.read_messages(unread_only=True)
-agent_a.broadcast("Deploy starting in 5 minutes")
 ```
 
 ### Goal Tracking
 
+Set goals and track progress. Integrates with drift detection.
+
 ```python
 agent.set_goal("Migrate to PostgreSQL", milestones=["Backup", "Schema", "Migrate", "Validate"])
 agent.update_progress(milestone_index=0, note="Backup done")
-agent.get_goal()  # {"progress": 0.25, "milestones_completed": 1}
 ```
 
 ### Memory Management
 
 ```python
-agent.forget("outdated_config")              # Delete specific memories
-agent.forget_stale(days=30)                  # Remove old memories
-agent.consolidate()                          # Merge duplicates
-agent.memory_health()                        # {"score": 78, "issues": [...]}
+agent.forget("outdated_config")       # Delete specific memories
+agent.forget_stale(days=30)           # Clean up old memories
+agent.consolidate()                   # Merge duplicates
+agent.memory_health()                 # Get a health report
 ```
 
-### Crash Recovery
+### Snapshots
 
 ```python
 agent.snapshot("before_migration")
@@ -119,6 +118,8 @@ agent.restore("before_migration")
 ```
 
 ### Shared Memory
+
+Multiple agents can share knowledge with conflict detection.
 
 ```python
 agent_a.share("research_pool", "analysis", {"findings": "..."})
@@ -136,7 +137,7 @@ new_agent.import_memories(bundle)
 
 ## Framework Integrations
 
-Drop-in memory for the frameworks you already use.
+Works with the frameworks you already use. Just swap in Octopoda and your agents get persistent memory.
 
 ```python
 # LangChain
@@ -178,32 +179,28 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
 }
 ```
 
-25 tools: memory operations, semantic search, loop detection, goal tracking, agent messaging, memory health, and more.
+25 tools for memory, search, loop detection, goals, messaging, and more.
 
 ---
 
 ## Cloud
 
-Sign up at [octopodas.com](https://octopodas.com) for the dashboard, managed hosting, and cloud API.
-
-**Setup:**
+Sign up free at [octopodas.com](https://octopodas.com) for the dashboard, managed hosting, and cloud API.
 
 ```bash
 export OCTOPODA_API_KEY=sk-octopoda-...
 ```
 
-Or run `octopoda-login` to sign up interactively from your terminal.
+Or run `octopoda-login` to sign up from your terminal.
 
 ```python
 from octopoda import Octopoda
 
-client = Octopoda()  # Reads API key from env
+client = Octopoda()
 agent = client.agent("my_agent")
 agent.write("preference", "dark mode")
 results = agent.search("user preferences")
 ```
-
-**Plans:**
 
 | | Free | Pro ($19/mo) | Business ($79/mo) |
 |---|---|---|---|
@@ -223,20 +220,19 @@ results = agent.search("user preferences")
 | **Local-first** | Yes (SQLite) | Cloud-first | Cloud-first | In-process |
 | **Loop detection** | 5-signal engine | No | No | No |
 | **Agent messaging** | Built-in | No | No | No |
-| **Temporal versioning** | Full history | No | No | No |
+| **Audit trail** | Full history | No | No | No |
 | **Crash recovery** | Snapshots + restore | N/A | No | No |
-| **Cross-agent sharing** | Shared memory bus | No | No | No |
+| **Shared memory** | Built-in | No | No | No |
 | **MCP server** | 25 tools | No | No | No |
-| **Knowledge graph** | spaCy NER | No | No | No |
 | **Semantic search** | Local embeddings | Cloud embeddings | Cloud embeddings | Needs vector DB |
-| **Framework integrations** | LangChain, CrewAI, AutoGen, OpenAI | LangChain | LangChain | Own only |
+| **Integrations** | LangChain, CrewAI, AutoGen, OpenAI | LangChain | LangChain | Own only |
 
 ---
 
 ## Installation
 
 ```bash
-pip install octopoda              # Core (local memory, ~5 dependencies)
+pip install octopoda              # Core — everything you need to get started
 pip install octopoda[ai]          # + Local embeddings for semantic search
 pip install octopoda[nlp]         # + spaCy for knowledge graph extraction
 pip install octopoda[mcp]         # + MCP server for Claude/Cursor
@@ -247,9 +243,9 @@ pip install octopoda[all]         # Everything
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OCTOPODA_API_KEY` | | Cloud API key (get at octopodas.com) |
+| `OCTOPODA_API_KEY` | | Cloud API key (free at octopodas.com) |
 | `OCTOPODA_LLM_PROVIDER` | `none` | LLM for fact extraction: `openai`, `anthropic`, `ollama` |
-| `OCTOPODA_OPENAI_API_KEY` | | OpenAI API key (for local fact extraction) |
+| `OCTOPODA_OPENAI_API_KEY` | | Your OpenAI key for local fact extraction |
 | `OCTOPODA_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Local embedding model (33MB, CPU) |
 | `SYNRIX_DATA_DIR` | `~/.synrix/data` | Local data directory |
 
