@@ -273,10 +273,11 @@ class AgentRuntime:
         # Always track writes for loop detection (no AI deps required)
         tracker_key = f"{self.tenant_id}:{self.agent_id}"
         now = time.time()
+        value_preview = str(value)[:200] if value else ""
         with _write_tracker_lock:
             wt_entries = _write_tracker.get(tracker_key, [])
             wt_entries = [e for e in wt_entries if e["time"] >= (now - 300)]
-            wt_entries.append({"time": now, "key": key})
+            wt_entries.append({"time": now, "key": key, "value_preview": value_preview})
             if len(wt_entries) > 50:
                 wt_entries = wt_entries[-50:]
             _write_tracker[tracker_key] = wt_entries
@@ -1160,7 +1161,58 @@ class AgentRuntime:
                 "Run agent.memory_health() periodically to track trends",
             ]
 
-        return {
+        # --- Cost estimation (additive — never breaks existing response) ---
+        cost_data = None
+        prediction_data = None
+        replay_data = None
+        try:
+            from synrix_runtime.monitoring.cost_models import (
+                estimate_loop_cost, estimate_savings, estimate_hourly_cost, get_cost_per_write
+            )
+            # Get model from tenant settings (passed via _llm_config or default)
+            model = getattr(self, "_llm_model", "unknown")
+
+            wpm = writes_per_minute if 'writes_per_minute' in dir() else 0
+            w5m = writes_per_5min if 'writes_per_5min' in dir() else 0
+
+            if model != "unknown" and w5m > 0:
+                cost_data = estimate_loop_cost(model, w5m)
+                cost_data["estimated_saved"] = estimate_savings(model, max(wpm, 1))
+                cost_data["projected_hourly"] = estimate_hourly_cost(model, max(wpm, 0))
+            elif w5m > 0:
+                cost_data = {"model": "unknown", "note": "Set your model in settings for cost tracking"}
+
+            # Predictive warning (only when velocity is elevated)
+            if wpm >= 5 and model != "unknown":
+                hourly = estimate_hourly_cost(model, wpm)
+                prediction_data = {
+                    "cost_next_hour": hourly,
+                    "cost_next_24h": round(hourly * 24, 4),
+                    "warning": f"At current rate this agent will cost ${hourly:.2f} in the next hour",
+                }
+        except Exception:
+            pass
+
+        # --- Loop replay (capture write sequence when looping) ---
+        try:
+            if severity in ("orange", "red"):
+                with _write_tracker_lock:
+                    wt_entries = _write_tracker.get(tracker_key, [])
+                    replay_entries = [e for e in wt_entries if e["time"] >= (now - 300)]
+                replay_data = []
+                for entry in replay_entries[-20:]:  # Last 20 writes max
+                    replay_item = {
+                        "key": entry.get("key", ""),
+                        "time": entry.get("time", 0),
+                    }
+                    # Include value preview if available
+                    if "value_preview" in entry:
+                        replay_item["value"] = entry["value_preview"]
+                    replay_data.append(replay_item)
+        except Exception:
+            pass
+
+        result = {
             "agent_id": self.agent_id,
             "severity": severity,
             "score": score,
@@ -1171,6 +1223,16 @@ class AgentRuntime:
             "recent_writes_1min": writes_per_minute if 'writes_per_minute' in dir() else 0,
             "checked_at": now,
         }
+
+        # Add new fields only if they have data (backward compatible)
+        if cost_data is not None:
+            result["cost"] = cost_data
+        if prediction_data is not None:
+            result["prediction"] = prediction_data
+        if replay_data is not None:
+            result["replay"] = replay_data
+
+        return result
 
     def get_loop_history(self, hours: int = 24) -> dict:
         """Get loop detection history for this agent over time.

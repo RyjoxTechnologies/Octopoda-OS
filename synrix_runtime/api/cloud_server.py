@@ -447,6 +447,7 @@ def _get_runtime(agent_id: str, auth=None, register: bool = False):
             tenant_settings["llm_provider"] = "platform"
             _save_tenant_settings(tenant_id, tenant_settings)
         runtime._llm_config = tenant_settings
+        runtime._llm_model = tenant_settings.get("llm_model", "unknown")
 
     # Evict oldest if at capacity
     while len(_agent_runtimes) >= _MAX_CACHED_RUNTIMES:
@@ -3133,6 +3134,14 @@ async def get_settings(auth=Depends(verify_auth)):
     result["conflict_detection"] = settings.get("conflict_detection", True)
     result["conflict_sensitivity"] = settings.get("conflict_sensitivity", 0.85)
 
+    # Cost tracking model selection
+    result["llm_model"] = settings.get("llm_model", "unknown")
+    try:
+        from synrix_runtime.monitoring.cost_models import get_model_names
+        result["available_models"] = get_model_names()
+    except Exception:
+        result["available_models"] = []
+
     return result
 
 
@@ -3157,6 +3166,7 @@ async def update_settings(req: dict, auth=Depends(verify_auth)):
         "llm_provider", "openai_api_key", "openai_model", "openai_base_url",
         "anthropic_api_key", "anthropic_model", "ollama_model",
         "ttl_auto_cleanup", "conflict_detection", "conflict_sensitivity",
+        "llm_model",
     }
     allowed_providers = {"openai", "anthropic", "none", "platform", "ollama"}
 
@@ -3381,6 +3391,34 @@ async def get_loop_status(agent_id: str, auth=Depends(verify_auth)):
     runtime = _get_runtime(agent_id, auth)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(_executor, lambda: runtime.get_loop_status())
+
+    # Persist cumulative cost savings when a loop is detected
+    try:
+        if result.get("severity") in ("orange", "red") and result.get("cost"):
+            tenant_id = _get_tenant_id(auth)
+            backend = runtime.backend
+            cost_key = f"metrics:{tenant_id}:cost_saved"
+            existing = backend.read(cost_key)
+            existing_data = {}
+            if existing:
+                val = existing.get("data", existing)
+                if isinstance(val, dict) and "value" in val:
+                    val = val["value"]
+                if isinstance(val, dict):
+                    existing_data = val
+
+            import time as _time
+            new_saved = result["cost"].get("estimated_saved", 0)
+            new_wasted = result["cost"].get("estimated_wasted", 0)
+            existing_data["total_saved"] = existing_data.get("total_saved", 0) + new_saved
+            existing_data["total_wasted"] = existing_data.get("total_wasted", 0) + new_wasted
+            existing_data["loops_caught"] = existing_data.get("loops_caught", 0) + 1
+            if "since" not in existing_data:
+                existing_data["since"] = _time.time()
+            backend.write(cost_key, existing_data)
+    except Exception:
+        pass
+
     return result
 
 
@@ -3631,3 +3669,49 @@ async def set_brain_goal(agent_id: str, req: dict, auth=Depends(verify_auth)):
     except Exception as e:
         raise HTTPException(500, f"Failed to encode goal: {e}")
     raise HTTPException(503, "Embedding model not available")
+
+
+@app.get("/v1/brain/cost-summary")
+async def brain_cost_summary(auth=Depends(verify_auth)):
+    """Get cumulative cost tracking across all loop detections.
+
+    Shows total money saved by catching loops, total wasted before detection,
+    and number of loops caught. Requires llm_model to be set in settings.
+    """
+    tenant_id = _get_tenant_id(auth)
+    settings = _get_tenant_settings(tenant_id)
+    model = settings.get("llm_model", "unknown")
+
+    try:
+        backend = None
+        try:
+            from synrix_runtime.api.tenant import TenantManager
+            tm = TenantManager.get_instance()
+            backend = tm.get_backend(tenant_id)
+        except Exception:
+            pass
+
+        if not backend:
+            return {"model": model, "total_saved": 0, "loops_caught": 0,
+                    "total_wasted_before_detection": 0, "since": None}
+
+        # Read cumulative cost data
+        cost_data = backend.read(f"metrics:{tenant_id}:cost_saved")
+        if cost_data:
+            val = cost_data.get("data", cost_data)
+            if isinstance(val, dict) and "value" in val:
+                val = val["value"]
+            if isinstance(val, dict):
+                return {
+                    "model": model,
+                    "total_saved": val.get("total_saved", 0),
+                    "loops_caught": val.get("loops_caught", 0),
+                    "total_wasted_before_detection": val.get("total_wasted", 0),
+                    "since": val.get("since", None),
+                }
+
+        return {"model": model, "total_saved": 0, "loops_caught": 0,
+                "total_wasted_before_detection": 0, "since": None}
+    except Exception:
+        return {"model": model, "total_saved": 0, "loops_caught": 0,
+                "total_wasted_before_detection": 0, "since": None}
