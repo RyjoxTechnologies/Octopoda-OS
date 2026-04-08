@@ -43,13 +43,20 @@ agent.remember("key", "value")
 agent.recall("key")
 ```
 
-Want the cloud dashboard? Just add an API key:
+Want the dashboard? Run the server:
+
+```bash
+pip install octopoda[server]
+octopoda
+```
+
+Open **http://localhost:7842** — same dashboard as the cloud version, running against your local data. No account needed.
+
+Want cloud sync across machines? Just add an API key:
 
 ```bash
 export OCTOPODA_API_KEY=sk-octopoda-...   # Free at octopodas.com
 ```
-
-Same code, now with real-time monitoring, semantic search, and multi-agent observability.
 
 ---
 
