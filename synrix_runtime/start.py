@@ -127,6 +127,10 @@ def main():
         dash_thread.start()
 
     # Step 5: Start cloud API server
+    # Enable auth bypass for local mode (only binds to localhost)
+    if not os.environ.get("SYNRIX_AUTH_DISABLED"):
+        os.environ["SYNRIX_AUTH_DISABLED"] = "1"
+
     _api_error = []
     if config.api_enabled:
         def start_api_server():
