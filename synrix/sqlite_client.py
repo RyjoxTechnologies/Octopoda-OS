@@ -972,7 +972,7 @@ class SynrixSQLiteClient:
                         "score": score,
                         "payload": {
                             "name": row["node_name"],
-                            "data": row.get("data", "{}"),
+                            "data": row["data"] if row["data"] is not None else "{}",
                             "type": "memory",
                         },
                         "matched_fact": row["fact_text"],
