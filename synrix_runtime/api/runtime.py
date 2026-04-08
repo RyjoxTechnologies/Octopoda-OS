@@ -1169,8 +1169,14 @@ class AgentRuntime:
             from synrix_runtime.monitoring.cost_models import (
                 estimate_loop_cost, estimate_savings, estimate_hourly_cost, get_cost_per_write
             )
-            # Get model from tenant settings (passed via _llm_config or default)
-            model = getattr(self, "_llm_model", "unknown")
+            # Get model from tenant settings — check _llm_config (updated on each request)
+            # then fall back to _llm_model (set on creation)
+            model = "unknown"
+            llm_config = getattr(self, "_llm_config", {})
+            if isinstance(llm_config, dict):
+                model = llm_config.get("llm_model", "unknown")
+            if model == "unknown":
+                model = getattr(self, "_llm_model", "unknown")
 
             wpm = writes_per_minute if 'writes_per_minute' in dir() else 0
             w5m = writes_per_5min if 'writes_per_5min' in dir() else 0
