@@ -194,14 +194,36 @@ class AgentRuntime:
                 logger.debug("Auth flow error (non-fatal): %s", e)
 
         # Connect to Synrix — use pre-injected backend for tenant isolation,
-        # or fall back to daemon's shared backend for local/SDK usage.
+        # cloud API if OCTOPODA_API_KEY is set, or local daemon as fallback.
+        import os
         start = time.perf_counter_ns()
+        self._cloud_agent = None  # Set when using cloud API directly
+
         if backend_override is not None:
             # Tenant-isolated mode: skip daemon registration entirely to
             # prevent writing agent state to the shared global backend.
             self.backend = backend_override
             self._daemon = None
-        else:
+        elif os.environ.get("OCTOPODA_API_KEY", "").startswith("sk-octopoda-"):
+            # Cloud mode: API key is set, route all operations through the cloud API.
+            # This is the path most users hit after signup + pip install.
+            try:
+                from synrix.cloud import Octopoda
+                _cloud_client = Octopoda()
+                self._cloud_agent = _cloud_client.agent(agent_id, metadata={"type": agent_type})
+                # Create a thin backend wrapper so internal code that touches
+                # self.backend still works (metrics, loop detection, etc.)
+                from synrix.agent_backend import get_synrix_backend
+                self.backend = get_synrix_backend(backend="mock")
+                self._daemon = None
+                self._is_cloud = True
+            except Exception as cloud_err:
+                logger.warning("Cloud connection failed (%s), falling back to local", cloud_err)
+                self._cloud_agent = None
+                # Fall through to local daemon below
+
+        if self._cloud_agent is None and backend_override is None:
+            # Local mode: no API key or cloud failed — use daemon's SQLite backend
             try:
                 from synrix_runtime.core.daemon import RuntimeDaemon
                 self._daemon = RuntimeDaemon.get_instance()
@@ -233,7 +255,8 @@ class AgentRuntime:
         self._heartbeat_thread.start()
 
         # Track if running in local or cloud mode
-        self._is_cloud = backend_override is not None and tenant_id != "_default"
+        if not hasattr(self, "_is_cloud"):
+            self._is_cloud = backend_override is not None and tenant_id != "_default"
 
         mode = "cloud" if self._is_cloud else "local"
         logger.info(f"[{agent_id}] Runtime connected in {connect_us:.1f}us | type={agent_type} | mode={mode}")
@@ -249,6 +272,26 @@ class AgentRuntime:
         Slow path (background): computes embedding, updates node, extracts facts.
         Semantic search finds the memory once background processing completes (~2-5s).
         """
+        # Cloud mode: route through the REST API
+        if self._cloud_agent is not None:
+            start = time.perf_counter_ns()
+            try:
+                result = self._cloud_agent.write(key, value, tags=tags)
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                return MemoryResult(
+                    node_id=result.get("node_id"),
+                    key=key,
+                    latency_us=latency_us,
+                    timestamp=result.get("timestamp", time.time()),
+                    success=result.get("success", True),
+                    loop_warning=result.get("loop_warning"),
+                )
+            except Exception as e:
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                logger.error("Cloud write failed: %s", e)
+                return MemoryResult(node_id=None, key=key, latency_us=latency_us,
+                                    timestamp=time.time(), success=False)
+
         full_key = f"agents:{self.agent_id}:{key}"
         payload = value if isinstance(value, dict) else {"value": value}
         if tags:
@@ -467,6 +510,19 @@ class AgentRuntime:
 
     def recall(self, key: str) -> RecallResult:
         """Recall a memory from Synrix."""
+        # Cloud mode: route through the REST API
+        if self._cloud_agent is not None:
+            start = time.perf_counter_ns()
+            try:
+                value = self._cloud_agent.read(key)
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                found = value is not None
+                return RecallResult(value=value, key=key, latency_us=latency_us, found=found)
+            except Exception as e:
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                logger.error("Cloud recall failed: %s", e)
+                return RecallResult(value=None, key=key, latency_us=latency_us, found=False)
+
         full_key = f"agents:{self.agent_id}:{key}"
 
         start = time.perf_counter_ns()
@@ -517,9 +573,22 @@ class AgentRuntime:
     def recall_similar(self, query: str, limit: int = 10) -> SearchResult:
         """Search agent memories by semantic similarity.
 
-        Requires sentence-transformers to be installed.
+        Requires sentence-transformers to be installed (local mode only).
+        Cloud mode handles embeddings server-side.
         Returns empty results if embeddings are not available.
         """
+        # Cloud mode: route through the REST API
+        if self._cloud_agent is not None:
+            start = time.perf_counter_ns()
+            try:
+                results = self._cloud_agent.search(query, limit=limit)
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                return SearchResult(items=results, count=len(results), latency_us=latency_us)
+            except Exception as e:
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                logger.error("Cloud search failed: %s", e)
+                return SearchResult(items=[], count=0, latency_us=latency_us)
+
         # Check if embeddings are available before searching
         try:
             from synrix.embeddings import EmbeddingModel
