@@ -1,0 +1,26 @@
+{
+  "experiment": "Knowledge Repair System",
+  "agents": [
+    "researcher (GPT-4o)",
+    "verifier (Claude Haiku 4.5)",
+    "arbitrator (GPT-4o)",
+    "auditor (Claude Haiku 4.5)"
+  ],
+  "questions": 10,
+  "initial_accuracy": 0.575,
+  "disputes_raised": 3,
+  "corrections_applied": 1,
+  "final_audit_score": 8.5,
+  "individual_scores": {
+    "solar1": 10,
+    "solar2": 10,
+    "solar3": 10,
+    "solar4": 9,
+    "solar5": 1,
+    "solar6": 9,
+    "solar7": 8,
+    "solar8": 10,
+    "solar9": 10,
+    "solar10": 8
+  }
+}

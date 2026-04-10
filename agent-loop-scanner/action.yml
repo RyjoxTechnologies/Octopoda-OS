@@ -1,0 +1,39 @@
+name: 'AI Agent Loop Scanner'
+description: 'Scans Python files for common AI agent loop patterns that waste tokens and money. Recommends fixes.'
+author: 'RyjoxTechnologies'
+
+branding:
+  icon: 'alert-circle'
+  color: 'orange'
+
+inputs:
+  path:
+    description: 'Path to scan (default: entire repo)'
+    required: false
+    default: '.'
+  model:
+    description: 'LLM model for cost estimation (default: gpt-4o)'
+    required: false
+    default: 'gpt-4o'
+  fail-on-critical:
+    description: 'Fail the check if critical loop risks are found'
+    required: false
+    default: 'false'
+
+outputs:
+  risks-found:
+    description: 'Number of loop risks found'
+  estimated-monthly-waste:
+    description: 'Estimated monthly cost if loops occur'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Run scanner
+      shell: bash
+      run: python ${{ github.action_path }}/scanner.py "${{ inputs.path }}" "${{ inputs.model }}" "${{ inputs.fail-on-critical }}"
