@@ -50,17 +50,151 @@ _local_mode = False
 _runtimes: OrderedDict = OrderedDict()
 
 
+class _FastClient:
+    """Lightweight cloud client using only requests. No synrix imports.
+    This avoids loading numpy/torch/sentence-transformers (~8s) on startup."""
+
+    def __init__(self, api_key, base_url="https://api.octapodas.com"):
+        import requests as _req
+        self._s = _req.Session()
+        self._s.headers.update({"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
+        self._base = base_url.rstrip("/")
+
+    def _post(self, path, data):
+        r = self._s.post(f"{self._base}{path}", json=data, timeout=10)
+        return r.json() if r.status_code in (200, 201) else {}
+
+    def _get(self, path, params=None):
+        r = self._s.get(f"{self._base}{path}", params=params, timeout=10)
+        return r.json() if r.status_code == 200 else {}
+
+    def agent(self, agent_id, metadata=None):
+        self._post("/v1/agents", {"agent_id": agent_id, **({"metadata": metadata} if metadata else {})})
+        return _FastAgent(self, agent_id)
+
+    def agents(self):
+        return [a.get("agent_id", "") for a in self._get("/v1/agents").get("agents", [])]
+
+    def read_shared(self, space, key):
+        r = self._get(f"/v1/shared/{space}/{key}")
+        if r.get("found"):
+            v = r.get("value")
+            return v.get("value", v) if isinstance(v, dict) and "value" in v else v
+        return None
+
+
+class _FastAgent:
+    """Lightweight agent handle using only HTTP."""
+
+    def __init__(self, client, agent_id):
+        self._c = client
+        self.agent_id = agent_id
+        self._base = f"/v1/agents/{agent_id}"
+
+    def write(self, key, value, tags=None):
+        d = {"key": key, "value": value}
+        if tags: d["tags"] = tags
+        return self._c._post(f"{self._base}/remember", d)
+
+    def read(self, key):
+        r = self._c._get(f"{self._base}/recall/{key}")
+        return r.get("value") if r.get("found") else None
+
+    def keys(self, prefix="", limit=100):
+        return self._c._get(f"{self._base}/search", {"prefix": prefix, "limit": limit}).get("items", [])
+
+    def search(self, query, limit=10):
+        return self._c._get(f"{self._base}/similar", {"q": query, "limit": limit}).get("items", [])
+
+    def history(self, key):
+        return self._c._get(f"{self._base}/history/{key}").get("versions", [])
+
+    def related(self, entity):
+        return self._c._get(f"{self._base}/related/{entity}").get("relationships", [])
+
+    def snapshot(self, label=None):
+        return self._c._post(f"{self._base}/snapshot", {"label": label})
+
+    def restore(self, label=None):
+        return self._c._post(f"{self._base}/restore", {"label": label})
+
+    def write_batch(self, items):
+        return self._c._post(f"{self._base}/remember/batch", {"items": items})
+
+    def metrics(self):
+        return self._c._get(self._base)
+
+    def share(self, space, key, value):
+        return self._c._post(f"/v1/shared/{space}", {"key": key, "value": value, "author_agent_id": self.agent_id})
+
+    def decide(self, decision, reasoning, context=None):
+        return self._c._post(f"{self._base}/decision", {"decision": decision, "reasoning": reasoning, "context": context or {}})
+
+    def get_loop_status(self):
+        return self._c._get(f"{self._base}/loops/status")
+
+    def get_loop_history(self, hours=24):
+        return self._c._get(f"{self._base}/loops/history", {"hours": hours})
+
+    def send_message(self, to_agent, message, msg_type="info"):
+        return self._c._post(f"{self._base}/messages/send", {"to_agent": to_agent, "message": message, "message_type": msg_type})
+
+    def read_messages(self, unread_only=False):
+        return self._c._get(f"{self._base}/messages/inbox", {"unread_only": unread_only}).get("messages", [])
+
+    def broadcast(self, message, msg_type="info"):
+        return self._c._post(f"{self._base}/messages/broadcast", {"message": message, "message_type": msg_type})
+
+    def set_goal(self, goal, milestones=None):
+        return self._c._post(f"{self._base}/goals", {"goal": goal, "milestones": milestones or []})
+
+    def get_goal(self):
+        return self._c._get(f"{self._base}/goals")
+
+    def update_progress(self, progress=None, milestone_index=None, note=None):
+        d = {}
+        if progress is not None: d["progress"] = progress
+        if milestone_index is not None: d["milestone_index"] = milestone_index
+        if note: d["note"] = note
+        return self._c._post(f"{self._base}/goals/progress", d)
+
+    def forget(self, key):
+        return self._c._post(f"{self._base}/forget", {"key": key})
+
+    def forget_stale(self, max_age_seconds):
+        return self._c._post(f"{self._base}/forget/stale", {"max_age_seconds": max_age_seconds})
+
+    def memory_health(self):
+        return self._c._get(f"{self._base}/health")
+
+    def consolidate(self, dry_run=True):
+        return self._c._post(f"{self._base}/consolidate", {"dry_run": dry_run})
+
+    def search_filtered(self, query=None, tags=None, importance=None, max_age_seconds=None):
+        params = {}
+        if query: params["q"] = query
+        if tags: params["tags"] = ",".join(tags)
+        if importance: params["importance"] = importance
+        if max_age_seconds: params["max_age_seconds"] = max_age_seconds
+        return self._c._get(f"{self._base}/search/filtered", params).get("items", [])
+
+    def process_conversation(self, messages, **kwargs):
+        return self._c._post(f"{self._base}/process", {"messages": messages, **kwargs})
+
+    def get_context(self, query, limit=10, format="text"):
+        return self._c._get(f"{self._base}/context", {"q": query, "limit": limit, "format": format})
+
+
 def _get_client():
-    """Get or create the Octopoda cloud client (singleton).
-    Falls back to local mode if no API key is set."""
+    """Get or create the Octopoda client (singleton).
+    Uses lightweight HTTP client — no heavy synrix imports."""
     global _client, _local_mode
     if _client is not None:
         return _client
 
     api_key = os.environ.get("OCTOPODA_API_KEY", "")
     if api_key and api_key != "YOUR_KEY_HERE":
-        from synrix.cloud import Octopoda
-        _client = Octopoda()  # reads OCTOPODA_API_KEY from env
+        _client = _FastClient(api_key)
         _local_mode = False
     else:
         _client = _LocalClientAdapter()
