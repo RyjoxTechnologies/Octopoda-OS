@@ -218,8 +218,20 @@ class AgentRuntime:
                 self._daemon = None
                 self._is_cloud = True
             except Exception as cloud_err:
-                logger.warning("Cloud connection failed (%s), falling back to local", cloud_err)
-                self._cloud_agent = None
+                err_msg = str(cloud_err).lower()
+                if "not verified" in err_msg or "email" in err_msg:
+                    print(f"\n  ERROR: Your email is not verified.")
+                    print(f"  Check your inbox for a 6-digit verification code from Octopoda.")
+                    print(f"  Verify at: https://octopodas.com/dashboard/settings\n")
+                    self._cloud_agent = None
+                elif "invalid" in err_msg or "401" in err_msg or "api key" in err_msg:
+                    print(f"\n  ERROR: Your OCTOPODA_API_KEY is not working.")
+                    print(f"  This usually means your email is not verified yet.")
+                    print(f"  Check your inbox for a verification code, or sign up at https://octopodas.com\n")
+                    self._cloud_agent = None
+                else:
+                    logger.warning("Cloud connection failed (%s), falling back to local", cloud_err)
+                    self._cloud_agent = None
                 # Fall through to local daemon below
 
         if self._cloud_agent is None and backend_override is None:
