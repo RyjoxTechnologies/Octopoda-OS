@@ -1,0 +1,9 @@
+{
+  "octopoda": {
+    "command": "python",
+    "args": ["-m", "synrix_runtime.api.mcp_server"],
+    "env": {
+      "OCTOPODA_API_KEY": "YOUR_KEY_HERE"
+    }
+  }
+}
