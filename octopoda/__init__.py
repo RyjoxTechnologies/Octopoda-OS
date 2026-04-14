@@ -33,36 +33,102 @@ except ImportError:
 from synrix_runtime.api.runtime import AgentRuntime
 from synrix_runtime.config import SynrixConfig
 
-# Framework integrations (lazy imports to avoid requiring all dependencies)
-def _lazy_langchain():
-    from synrix_runtime.integrations.langchain_memory import SynrixMemory
-    return SynrixMemory
+# Framework integrations — simple one-line wrappers
+# Usage: from octopoda import LangChainMemory
+#        memory = LangChainMemory("my_agent")
 
-def _lazy_crewai():
-    from synrix_runtime.integrations.crewai_memory import SynrixCrewMemory
-    return SynrixCrewMemory
+def _get_backend_auto():
+    """Auto-detect backend: cloud if API key set, local otherwise."""
+    import os
+    if os.environ.get("OCTOPODA_API_KEY", "").startswith("sk-octopoda-"):
+        return None  # Let integration use cloud
+    # Local mode: create a local backend
+    from synrix_runtime.api.runtime import AgentRuntime
+    _rt = AgentRuntime("_integrations", require_account=False)
+    return _rt.backend
 
-def _lazy_autogen():
-    from synrix_runtime.integrations.autogen_memory import SynrixAutoGenMemory
-    return SynrixAutoGenMemory
 
-def _lazy_openai():
-    from synrix_runtime.integrations.openai_agents import SynrixOpenAIMemory
-    return SynrixOpenAIMemory
+class LangChainMemory:
+    """One-line LangChain integration. Works locally or cloud automatically.
+
+    Usage:
+        from octopoda import LangChainMemory
+        memory = LangChainMemory("my_agent")
+        chain = ConversationChain(llm=llm, memory=memory)
+    """
+    def __new__(cls, agent_id="langchain_default", **kwargs):
+        from synrix_runtime.integrations.langchain_memory import SynrixMemory
+        if "backend" not in kwargs:
+            kwargs["backend"] = _get_backend_auto()
+        return SynrixMemory(agent_id=agent_id, **kwargs)
+
+
+class CrewAIMemory:
+    """One-line CrewAI integration. Works locally or cloud automatically.
+
+    Usage:
+        from octopoda import CrewAIMemory
+        crew = CrewAIMemory("my_crew")
+        crew.store_finding("researcher", "key", "value")
+    """
+    def __new__(cls, crew_id="default_crew", **kwargs):
+        from synrix_runtime.integrations.crewai_memory import SynrixCrewMemory
+        if "backend" not in kwargs:
+            kwargs["backend"] = _get_backend_auto()
+        return SynrixCrewMemory(crew_id=crew_id, **kwargs)
+
+
+class AutoGenMemory:
+    """One-line AutoGen integration. Works locally or cloud automatically.
+
+    Usage:
+        from octopoda import AutoGenMemory
+        memory = AutoGenMemory("my_group")
+        memory.store_message(sender="user", recipient="bot", content="hello")
+    """
+    def __new__(cls, group_id="default", **kwargs):
+        from synrix_runtime.integrations.autogen_memory import SynrixAutoGenMemory
+        if "backend" not in kwargs:
+            kwargs["backend"] = _get_backend_auto()
+        return SynrixAutoGenMemory(group_id=group_id, **kwargs)
+
+
+class OpenAIAgentsMemory:
+    """One-line OpenAI Agents SDK integration. Works locally or cloud automatically.
+
+    Usage:
+        from octopoda import OpenAIAgentsMemory
+        memory = OpenAIAgentsMemory()
+        memory.store_thread_state("thread_123", {"messages": [...]})
+    """
+    def __new__(cls, **kwargs):
+        from synrix_runtime.integrations.openai_agents import SynrixOpenAIMemory
+        if "backend" not in kwargs:
+            kwargs["backend"] = _get_backend_auto()
+        return SynrixOpenAIMemory(**kwargs)
 
 
 __all__ = [
+    # Core
     "Octopoda",
     "Agent",
+    "AgentRuntime",
+    # Framework integrations (simple)
+    "LangChainMemory",
+    "CrewAIMemory",
+    "AutoGenMemory",
+    "OpenAIAgentsMemory",
+    # Config
+    "SynrixConfig",
+    # Errors
     "OctopodaError",
     "AuthError",
     "RateLimitError",
-    "AgentRuntime",
-    "SynrixConfig",
-    "get_synrix_backend",
-    "SynrixAgentBackend",
-    "Memory",
     "SynrixError",
     "SynrixConnectionError",
     "SynrixNotFoundError",
+    # Low-level
+    "get_synrix_backend",
+    "SynrixAgentBackend",
+    "Memory",
 ]
