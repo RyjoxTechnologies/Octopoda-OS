@@ -60,9 +60,12 @@ class SynrixMemory(BaseMemory):
     """
 
     def __init__(self, agent_id: str = "langchain_default", memory_key: str = "history",
+                 session_id: Optional[str] = None, return_messages: bool = False,
                  backend=None, **kwargs):
         self.agent_id = agent_id
         self.memory_key = memory_key
+        self.session_id = session_id
+        self.return_messages = return_messages
         self._memory_variables = [memory_key]
         self._message_count = 0
 
@@ -74,6 +77,12 @@ class SynrixMemory(BaseMemory):
             client = _get_client()
             self._agent = client.agent(agent_id, metadata={"type": "langchain"})
             self.backend = None
+
+    def _messages_prefix(self) -> str:
+        """Key prefix for this session's messages. Isolates sessions when session_id is set."""
+        if self.session_id:
+            return f"langchain:{self.agent_id}:sessions:{self.session_id}:messages:"
+        return f"langchain:{self.agent_id}:messages:"
 
     @property
     def memory_variables(self) -> List[str]:
@@ -91,7 +100,7 @@ class SynrixMemory(BaseMemory):
         }
 
         self._agent.write(
-            f"langchain:{self.agent_id}:messages:{int(time.time() * 1000000)}",
+            f"{self._messages_prefix()}{int(time.time() * 1000000)}",
             entry,
             tags=["langchain_message", self.agent_id],
         )
@@ -103,8 +112,13 @@ class SynrixMemory(BaseMemory):
         )
 
     def load_memory_variables(self, inputs: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Load conversation history from Octopoda Cloud."""
-        results = self._agent.keys(prefix=f"langchain:{self.agent_id}:messages:", limit=100)
+        """Load conversation history from Octopoda Cloud.
+
+        If return_messages=True was passed at construction, returns a list of
+        LangChain message objects (HumanMessage/AIMessage) suitable for chat models.
+        Otherwise returns a concatenated string.
+        """
+        results = self._agent.keys(prefix=self._messages_prefix(), limit=100)
 
         messages = []
         for r in results:
@@ -113,6 +127,21 @@ class SynrixMemory(BaseMemory):
                 messages.append(val)
 
         messages.sort(key=lambda x: x.get("turn", 0))
+
+        if self.return_messages:
+            try:
+                from langchain_core.messages import HumanMessage, AIMessage
+                msg_objects = []
+                for msg in messages:
+                    inp = msg.get("inputs", {})
+                    out = msg.get("outputs", {})
+                    human_input = inp.get("input", inp.get("human_input", str(inp)))
+                    ai_output = out.get("output", out.get("response", str(out)))
+                    msg_objects.append(HumanMessage(content=human_input))
+                    msg_objects.append(AIMessage(content=ai_output))
+                return {self.memory_key: msg_objects}
+            except ImportError:
+                pass  # langchain_core not installed — fall through to string format
 
         history_parts = []
         for msg in messages:
@@ -130,8 +159,8 @@ class SynrixMemory(BaseMemory):
         pass
 
     def get_full_history(self) -> List[dict]:
-        """Get complete conversation history."""
-        results = self._agent.keys(prefix=f"langchain:{self.agent_id}:messages:", limit=500)
+        """Get complete conversation history (scoped to the current session_id if set)."""
+        results = self._agent.keys(prefix=self._messages_prefix(), limit=500)
         messages = []
         for r in results:
             val = r.get("value", r)
