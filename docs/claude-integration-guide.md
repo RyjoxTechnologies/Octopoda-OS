@@ -16,7 +16,7 @@ Give Claude persistent memory that survives across conversations. Claude remembe
 ### Step 1: Install Octopoda
 
 ```bash
-pip install octopoda
+pip install octopoda[mcp]
 ```
 
 ### Step 2: Get Your Free API Key
@@ -29,7 +29,7 @@ Sign up at [octopodas.com](https://octopodas.com) and copy your API key from the
 claude mcp add octopoda -s user -e OCTOPODA_API_KEY=sk-octopoda-YOUR_KEY -- python -m synrix_runtime.api.mcp_server
 ```
 
-That's it. Restart Claude Code and you have 13 memory tools available.
+That's it. Restart Claude Code and you have 28 memory tools available.
 
 ### Step 3 (Alternative): Add to Claude Desktop
 

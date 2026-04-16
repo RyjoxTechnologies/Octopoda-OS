@@ -4,7 +4,7 @@
 - 215 tests passing
 - Semantic search, knowledge graph, temporal versioning
 - Multi-tenant isolation, PBKDF2 auth, GDPR endpoints
-- MCP server (13 tools), REST API (60+ endpoints)
+- MCP server (28 tools), REST API (60+ endpoints)
 - Dashboard (8 tabs, real-time SSE)
 - Rate limiting, input validation, CORS
 

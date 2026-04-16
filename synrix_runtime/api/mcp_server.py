@@ -54,19 +54,32 @@ class _FastClient:
     """Lightweight cloud client using only requests. No synrix imports.
     This avoids loading numpy/torch/sentence-transformers (~8s) on startup."""
 
-    def __init__(self, api_key, base_url="https://api.octapodas.com"):
+    def __init__(self, api_key, base_url="https://api.octopodas.com"):
         import requests as _req
         self._s = _req.Session()
         self._s.headers.update({"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
         self._base = base_url.rstrip("/")
 
+    def _raise_for_api_error(self, r):
+        """Raise a descriptive error surfacing the server's message (e.g. agent limit, auth, rate limit)."""
+        detail = ""
+        try:
+            detail = r.json().get("detail", "")
+        except Exception:
+            detail = (r.text or "")[:300]
+        raise RuntimeError(f"Octopoda API {r.status_code}: {detail or 'request failed'}")
+
     def _post(self, path, data):
         r = self._s.post(f"{self._base}{path}", json=data, timeout=10)
-        return r.json() if r.status_code in (200, 201) else {}
+        if r.status_code not in (200, 201):
+            self._raise_for_api_error(r)
+        return r.json()
 
     def _get(self, path, params=None):
         r = self._s.get(f"{self._base}{path}", params=params, timeout=10)
-        return r.json() if r.status_code == 200 else {}
+        if r.status_code != 200:
+            self._raise_for_api_error(r)
+        return r.json()
 
     def agent(self, agent_id, metadata=None):
         self._post("/v1/agents", {"agent_id": agent_id, **({"metadata": metadata} if metadata else {})})
