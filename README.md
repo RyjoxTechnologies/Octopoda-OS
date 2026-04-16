@@ -274,7 +274,7 @@ All integrations work locally (no API key) or with cloud sync (set `OCTOPODA_API
 Give Claude, Cursor, or any MCP-compatible AI persistent memory with zero code.
 
 ```bash
-pip install octopoda
+pip install octopoda[mcp]
 ```
 
 Add to Claude Code:
