@@ -46,8 +46,9 @@ class SynrixCrewMemory:
         finding = crew_memory.get_finding("market_size")
     """
 
-    def __init__(self, crew_id: str, backend=None):
+    def __init__(self, crew_id: str, backend=None, crew_name: Optional[str] = None, **kwargs):
         self.crew_id = crew_id
+        self.crew_name = crew_name or crew_id
 
         if backend is not None:
             from synrix_runtime.integrations._local_adapter import _LocalAgentAdapter
