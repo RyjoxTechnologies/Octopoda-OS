@@ -1,24 +1,40 @@
-# Octopoda
+<h1 align="center">🐙 Octopoda</h1>
 
-### The open-source memory operating system for AI agents.
+<p align="center">
+  <strong>The open-source memory operating system for AI agents.</strong><br />
+  Persistent memory · Loop detection · Audit trails · 3D visualization
+</p>
 
-Give your agents persistent memory, loop detection, audit trails, and real-time observability. Everything works automatically once you create an agent.
+<p align="center">
+  <a href="https://pypi.org/project/octopoda/"><img src="https://img.shields.io/pypi/v/octopoda?style=flat-square" alt="PyPI" /></a>
+  <a href="https://pypi.org/project/octopoda/"><img src="https://img.shields.io/pypi/dm/octopoda?style=flat-square&color=blue" alt="Downloads" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License" /></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9+-blue?style=flat-square" alt="Python 3.9+" /></a>
+  <img src="https://img.shields.io/badge/tests-208%20passing-brightgreen?style=flat-square" alt="Tests" />
+  <a href="https://github.com/RyjoxTechnologies/Octopoda-OS/stargazers"><img src="https://img.shields.io/github/stars/RyjoxTechnologies/Octopoda-OS?style=flat-square&color=gold" alt="Stars" /></a>
+</p>
 
-[![PyPI](https://img.shields.io/pypi/v/octopoda)](https://pypi.org/project/octopoda/)
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-208%20passing-brightgreen)]()
-[![GitHub release](https://img.shields.io/github/v/release/RyjoxTechnologies/Octopoda-OS)](https://github.com/RyjoxTechnologies/Octopoda-OS/releases)
+<p align="center">
+  <a href="https://octopodas.com"><b>Website</b></a> ·
+  <a href="https://octopodas.com/docs"><b>Docs</b></a> ·
+  <a href="https://octopodas.com/dashboard"><b>Dashboard</b></a> ·
+  <a href="#quick-start"><b>Quick start</b></a> ·
+  <a href="#mcp-server"><b>MCP</b></a>
+</p>
 
-![Octopoda Dashboard](docs/images/dashboard-overview.png)
+<p align="center">
+  <img src="docs/images/neural-brain.png" alt="Octopoda Neural Brain — 3D visualization of live agent activity" width="900" />
+</p>
 
-Track latency, error rates, memory usage, and health scores per agent.
+<p align="center"><sub><i>Live 3D view of 5 agents, 294 events, and 98 loops caught — <code>$1.19</code> in wasted tokens detected.</i></sub></p>
 
-![Agent Performance](docs/images/dashboard-performance.png)
+---
 
-Browse every memory, inspect version history, and see exactly how an agent's knowledge changed over time.
+## Why Octopoda
 
-![Memory Explorer](docs/images/memory-explorer.png)
+- **Agents forget.** Every session starts from zero. Octopoda gives them memory that survives restarts, crashes, and deployments — automatically.
+- **Agents loop.** A stuck agent can burn hundreds of dollars in tokens before anyone notices. Octopoda's 5-signal loop detector catches it in seconds.
+- **Agents are black boxes.** Why did it do that? Octopoda logs every decision, every write, every recovery — and visualizes it in a 3D view so you can actually see what's happening.
 
 ---
 
@@ -94,6 +110,18 @@ You don't need to configure any of this. It just works.
 
 ---
 
+## Dashboards
+
+Track latency, error rates, memory usage, and health scores per agent.
+
+![Agent Performance](docs/images/dashboard-performance.png)
+
+Browse every memory, inspect version history, and see exactly how an agent's knowledge changed over time.
+
+![Memory Explorer](docs/images/memory-explorer.png)
+
+---
+
 ## When You Need More Control
 
 Everything below is optional. Use it when you need it.
@@ -165,31 +193,49 @@ new_agent.import_memories(bundle)
 
 Works with the frameworks you already use. Just swap in Octopoda and your agents get persistent memory.
 
+<details>
+<summary><b>LangChain — drop-in conversation memory</b></summary>
+
 ```python
-# LangChain — drop-in conversation memory
 from octopoda import LangChainMemory
 memory = LangChainMemory("my-chain")
 memory.save_context({"input": "I prefer dark mode"}, {"output": "Got it!"})
 variables = memory.load_memory_variables({})
+```
+</details>
 
-# CrewAI — persistent crew findings and task results
+<details>
+<summary><b>CrewAI — persistent crew findings and task results</b></summary>
+
+```python
 from octopoda import CrewAIMemory
 crew = CrewAIMemory("research-crew")
 crew.store_finding("researcher", "market_size", {"value": "$4.2B"})
 finding = crew.get_finding("market_size")
+```
+</details>
 
-# AutoGen — multi-agent conversation memory
+<details>
+<summary><b>AutoGen — multi-agent conversation memory</b></summary>
+
+```python
 from octopoda import AutoGenMemory
 memory = AutoGenMemory("dev-team")
 memory.store_message("user_proxy", "assistant", "Research quantum computing")
 history = memory.get_conversation_history()
+```
+</details>
 
-# OpenAI Agents SDK — thread and run persistence
+<details>
+<summary><b>OpenAI Agents SDK — thread and run persistence</b></summary>
+
+```python
 from octopoda import OpenAIAgentsMemory
 memory = OpenAIAgentsMemory()
 memory.store_thread_state("thread_001", {"messages": [...]})
 restored = memory.restore_thread("thread_001")
 ```
+</details>
 
 All integrations work locally (no API key) or with cloud sync (set `OCTOPODA_API_KEY`).
 
