@@ -122,6 +122,43 @@ Browse every memory, inspect version history, and see exactly how an agent's kno
 
 ---
 
+## Audit Trail
+
+Every decision, crash, recovery, and anomaly your agents make is logged with full context — including a memory snapshot captured at the moment of decision. Replay any time window and see exactly what each agent knew, decided, and why.
+
+![Audit Trail](docs/images/audit-trail.png)
+
+```python
+agent.log_decision(
+    decision="Keep single VPS instead of Kubernetes",
+    reasoning="Current traffic (14k req/day) doesn't justify K8s complexity. VPS handles 100x this load.",
+    context={"current_rps": 14000, "threshold_rps": 1000000},
+)
+```
+
+Every `log_decision` call automatically captures a snapshot of the agent's memory at that instant. The audit timeline shows decisions alongside crashes and recoveries, filterable per agent. Built-in loop detection warns you if a decision repeats a recent one.
+
+---
+
+## Shared Memory
+
+Multiple agents working on the same problem can share knowledge through named memory spaces. Writes are atomic, reads are immediate, and every change is logged with its author — so you always know which agent contributed what.
+
+![Shared Memory](docs/images/shared-memory.png)
+
+```python
+# Research agent writes a finding into a shared space
+research_agent.share("market_size", "$2.1B AI memory market by 2027", space="team-knowledge")
+
+# Any other agent in the same space reads it
+result = coding_assistant.read_shared("market_size", space="team-knowledge")
+print(result.value)  # "$2.1B AI memory market by 2027"
+```
+
+Each space tracks authorship and timestamps for every write. Use `agent.shared_conflicts(space="team-knowledge")` to surface disagreements when multiple agents write to the same key.
+
+---
+
 ## When You Need More Control
 
 Everything below is optional. Use it when you need it.
@@ -157,10 +194,10 @@ agent.update_progress(milestone_index=0, note="Backup done")
 ### Memory Management
 
 ```python
-agent.forget("outdated_config")       # Delete specific memories
-agent.forget_stale(days=30)           # Clean up old memories
-agent.consolidate()                   # Merge duplicates
-agent.memory_health()                 # Get a health report
+agent.forget("outdated_config")                    # Delete specific memories
+agent.forget_stale(max_age_seconds=30*86400)       # Clean up memories older than 30 days
+agent.consolidate(dry_run=False)                   # Merge duplicate memories (omit dry_run to preview)
+agent.memory_health()                              # Get a health report
 ```
 
 ### Snapshots
@@ -169,15 +206,6 @@ agent.memory_health()                 # Get a health report
 agent.snapshot("before_migration")
 # ... something goes wrong ...
 agent.restore("before_migration")
-```
-
-### Shared Memory
-
-Multiple agents can share knowledge with conflict detection.
-
-```python
-agent_a.share("research_pool", "analysis", {"findings": "..."})
-data = agent_b.read_shared("research_pool", "analysis")
 ```
 
 ### Export / Import
@@ -315,7 +343,7 @@ results = agent.search("user preferences")
 | **Audit trail** | Full history | No | No | No |
 | **Crash recovery** | Snapshots + restore | N/A | No | No |
 | **Shared memory** | Built-in | No | No | No |
-| **MCP server** | 25 tools | No | No | No |
+| **MCP server** | 28 tools | No | No | No |
 | **Semantic search** | Local embeddings | Cloud embeddings | Cloud embeddings | Needs vector DB |
 | **Integrations** | LangChain, CrewAI, AutoGen, OpenAI | LangChain | LangChain | Own only |
 
