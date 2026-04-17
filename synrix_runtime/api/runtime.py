@@ -401,8 +401,11 @@ class AgentRuntime:
                     if extractor:
                         result = extractor.extract(text)
                         self._store_extraction(result, nid, _background=True)
-                except Exception:
-                    pass
+                    else:
+                        logger.info("EntityExtractor.get() returned None — KG extraction skipped for node %s", nid)
+                except Exception as e:
+                    logger.error("KG entity extraction failed for node %s: %s",
+                                 nid, e, exc_info=True)
 
             # Load per-tenant LLM config if available
             _llm_config = getattr(self, '_llm_config', None)
