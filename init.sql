@@ -14,20 +14,26 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS tenants (
-    tenant_id       TEXT PRIMARY KEY,
-    email           TEXT UNIQUE NOT NULL,
-    password_hash   TEXT NOT NULL,
-    created_at      TIMESTAMPTZ DEFAULT NOW(),
-    plan            TEXT DEFAULT 'free',
-    max_agents      INTEGER DEFAULT 100,
-    max_memories    INTEGER DEFAULT 100000,
-    active          BOOLEAN DEFAULT TRUE,
-    verified        BOOLEAN DEFAULT FALSE,
-    first_name      TEXT DEFAULT '',
-    last_name       TEXT DEFAULT '',
-    company         TEXT DEFAULT '',
-    use_case        TEXT DEFAULT ''
+    tenant_id               TEXT PRIMARY KEY,
+    email                   TEXT UNIQUE NOT NULL,
+    password_hash           TEXT NOT NULL,
+    created_at              TIMESTAMPTZ DEFAULT NOW(),
+    plan                    TEXT DEFAULT 'free',
+    max_agents              INTEGER DEFAULT 100,
+    max_memories            INTEGER DEFAULT 100000,
+    active                  BOOLEAN DEFAULT TRUE,
+    verified                BOOLEAN DEFAULT FALSE,
+    first_name              TEXT DEFAULT '',
+    last_name               TEXT DEFAULT '',
+    company                 TEXT DEFAULT '',
+    use_case                TEXT DEFAULT '',
+    stripe_customer_id      TEXT,
+    stripe_subscription_id  TEXT
 );
+
+-- Idempotent additions for existing DBs (safe no-op on fresh installs)
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
 
 CREATE TABLE IF NOT EXISTS api_keys (
     key_hash        TEXT PRIMARY KEY,

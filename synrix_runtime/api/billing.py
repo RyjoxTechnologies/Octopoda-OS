@@ -229,11 +229,22 @@ def handle_webhook_event(payload: bytes, signature: str) -> dict:
 def _verify_webhook_signature(payload: bytes, signature: str) -> dict:
     """Verify Stripe webhook signature."""
     import json
+    if not signature:
+        logger.warning("Webhook called without Stripe-Signature header")
+        return None
     try:
-        # Parse the Stripe-Signature header
-        elements = dict(item.split("=", 1) for item in signature.split(","))
+        # Parse the Stripe-Signature header (format: t=...,v1=...)
+        elements = {}
+        for item in signature.split(","):
+            if "=" not in item:
+                continue
+            k, v = item.split("=", 1)
+            elements[k.strip()] = v.strip()
         timestamp = elements.get("t", "")
         expected_sig = elements.get("v1", "")
+        if not timestamp or not expected_sig:
+            logger.warning("Webhook signature missing t= or v1= component")
+            return None
 
         # Compute expected signature
         signed_payload = f"{timestamp}.".encode() + payload
