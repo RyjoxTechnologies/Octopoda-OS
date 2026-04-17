@@ -4224,8 +4224,25 @@ async def admin_health(auth=Depends(verify_auth)):
                             "error": f"{type(e).__name__}: {e}"[:200]})
             return None
 
-    runtime = _step("register_and_get_runtime",
-                    lambda: _get_runtime(test_agent, auth, register=True))
+    # Admin accounts may be at the agent cap (e.g. platform owner has 50
+    # demo agents). Fall back to an ephemeral AgentRuntime that skips the
+    # cap-gated registration so the smoke test still runs.
+    def _make_runtime():
+        try:
+            return _get_runtime(test_agent, auth, register=True)
+        except HTTPException as e:
+            if e.status_code in (402, 403):
+                from synrix_runtime.api.tenant import TenantManager
+                from synrix_runtime.api.runtime import AgentRuntime
+                tm = TenantManager.get_instance()
+                backend = tm.get_backend(tenant_id)
+                return AgentRuntime(
+                    test_agent, agent_type="healthcheck",
+                    backend_override=backend, tenant_id=tenant_id,
+                    require_account=False,
+                )
+            raise
+    runtime = _step("register_and_get_runtime", _make_runtime)
     if runtime:
         # Null-byte regression test — this is the exact bug that hid for months
         _step("write_with_null_byte",
