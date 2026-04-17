@@ -4006,3 +4006,108 @@ async def sentry_test(auth=Depends(verify_auth)):
         raise HTTPException(status_code=503, detail="Sentry is not configured on this instance (SENTRY_DSN unset)")
     # Controlled exception — this SHOULD land in Sentry within ~30 seconds.
     raise RuntimeError("Sentry verification — ignore this, it's intentional.")
+
+
+# ---------------------------------------------------------------------------
+# Admin billing overview — paid tenants + MRR + recent events
+# ---------------------------------------------------------------------------
+# Monthly price per plan (matches billing.get_plans() — keep in sync).
+_PLAN_MONTHLY_USD = {
+    "free": 0, "early_adopter": 0,
+    "pro": 19, "business": 49, "scale": 99,
+    "enterprise": 0,  # custom — not counted in auto-MRR
+}
+
+@app.get("/v1/admin/billing/overview")
+async def admin_billing_overview(auth=Depends(verify_auth)):
+    """Admin-only billing dashboard data: paid tenants, MRR, recent Stripe events."""
+    tenant_id = _get_tenant_id(auth)
+    if tenant_id not in _ADMIN_TENANTS:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    from synrix_runtime.api.tenant import TenantManager
+    tm = TenantManager.get_instance()
+    conn = tm._conn()
+    summary_by_plan = {}
+    paid_tenants = []
+    total_tenants = 0
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT plan, COUNT(*) FROM tenants GROUP BY plan")
+        for plan, count in cur.fetchall():
+            summary_by_plan[plan or "unknown"] = count
+            total_tenants += count
+
+        # Paid tenants (anything with a stripe subscription ID)
+        cur.execute("""
+            SELECT tenant_id, email, first_name, last_name, plan, created_at,
+                   max_agents, max_memories, stripe_customer_id, stripe_subscription_id
+              FROM tenants
+             WHERE stripe_subscription_id IS NOT NULL
+               AND stripe_subscription_id <> ''
+             ORDER BY created_at DESC
+        """)
+        for row in cur.fetchall():
+            paid_tenants.append({
+                "tenant_id": row[0],
+                "email": row[1],
+                "name": (f"{row[2] or ''} {row[3] or ''}".strip()) or None,
+                "plan": row[4],
+                "created_at": row[5].isoformat() if row[5] else None,
+                "max_agents": row[6],
+                "max_memories": row[7],
+                "stripe_customer_id": row[8],
+                "stripe_subscription_id": row[9],
+            })
+    finally:
+        tm._release(conn)
+
+    # MRR from plan counts (free + early_adopter contribute $0)
+    mrr_usd = sum(_PLAN_MONTHLY_USD.get(t["plan"], 0) for t in paid_tenants)
+
+    # Recent billing events from Stripe — last 20, all billing-related types
+    recent_events = []
+    stripe_key = os.environ.get("STRIPE_SECRET_KEY", "")
+    if stripe_key:
+        try:
+            import requests as _req
+            r = _req.get(
+                "https://api.stripe.com/v1/events",
+                auth=(stripe_key, ""),
+                params={
+                    "limit": 20,
+                    "types[]": ["checkout.session.completed",
+                                "customer.subscription.updated",
+                                "customer.subscription.deleted",
+                                "invoice.payment_failed",
+                                "invoice.payment_succeeded"],
+                },
+                timeout=10,
+            )
+            for ev in r.json().get("data", []):
+                obj = ev.get("data", {}).get("object", {})
+                recent_events.append({
+                    "id": ev.get("id"),
+                    "type": ev.get("type"),
+                    "created": ev.get("created"),
+                    "livemode": ev.get("livemode"),
+                    "customer": obj.get("customer") or "",
+                    "tenant_id": obj.get("metadata", {}).get("tenant_id", "")
+                                 if isinstance(obj.get("metadata"), dict) else "",
+                    "amount": (obj.get("amount_paid") or obj.get("amount_due") or 0) / 100.0,
+                    "currency": (obj.get("currency") or "").upper(),
+                })
+        except Exception as e:
+            logger.error("Stripe events fetch failed: %s", e)
+
+    return {
+        "summary": {
+            "total_tenants": total_tenants,
+            "paid_tenants": len(paid_tenants),
+            "mrr_usd": mrr_usd,
+            "arr_usd": mrr_usd * 12,
+            "by_plan": summary_by_plan,
+        },
+        "paid_tenants": paid_tenants,
+        "recent_events": recent_events,
+    }
