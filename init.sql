@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS tenants (
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
 
+-- Complimentary upgrade expiry (used by scripts/apology_campaign.py and
+-- scripts/revert_expired_comps.py). When comp_expires_at < NOW() the
+-- nightly revert cron downgrades the tenant back to free.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS comp_expires_at TIMESTAMPTZ;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS comp_reason TEXT;
+
 -- Platform free-tier extraction counter. Separate table so we can do atomic
 -- UPSERT-with-RETURNING across multiple uvicorn workers. Previous
 -- implementation used an in-process threading.Lock which allowed parallel
