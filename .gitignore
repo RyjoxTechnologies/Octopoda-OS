@@ -60,3 +60,11 @@ website/
 scripts/
 .claude/
 LOVABLE-*.md
+
+# MCP bundle artifacts (build outputs)
+mcpb/
+*.mcpb
+
+# Generated research reports (not canonical source)
+FEATURE-ANALYSIS.md
+RESEARCH-REPORT.md
