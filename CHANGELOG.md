@@ -1,6 +1,26 @@
 # Changelog
 
-## 3.1.0 (Unreleased — open-core-dev branch)
+## 3.1.0 (2026-04-16)
+
+### Highlights since 3.0.9
+
+**Neural Brain — 3D Agent Visualization** (new hero feature)
+
+Real-time 3D view of agent activity powered by react-force-graph-3d with Three.js bloom post-processing. Every memory write, decision, loop alert, and cross-agent write becomes a node. Click any node to see the full event with its memory snapshot. Time scrubber replays any 24h window. Mobile fallback to 2D force graph. Backed by 9 `/v1/brain/*` endpoints.
+
+**Integration kwargs now work** — three documented parameters that were silently accepted via `**kwargs` and ignored:
+- `LangChainMemory(session_id=...)` — each session_id now gets isolated message storage. `RunnableWithMessageHistory` multi-session patterns work correctly.
+- `LangChainMemory(return_messages=True)` — returns `list[HumanMessage | AIMessage]` instead of a concatenated string. Required for chat models.
+- `CrewAIMemory(crew_name=...)` — was raising `TypeError`. Now accepted as an optional identifier.
+
+**MCP client fixes** (affects every Claude Desktop / Cursor / Windsurf user):
+- Fixed base URL typo `api.octapodas.com` → `api.octopodas.com` (previously worked by DNS accident)
+- Non-2xx API responses now raise descriptive errors. Silent swallow was hiding 403 "agent limit reached" — users hit the free-tier 5-agent cap, every `remember` call reported success, but nothing was stored. That path is now loud.
+- Install: `pip install octopoda[mcp]` (bare install didn't include the `mcp` Python package).
+
+**Bundled dashboard updated** — the `synrix_runtime/dashboard/static/` shipped with the wheel now matches octopodas.com: Neural Brain, Audit Trail, Shared Memory tabs. Previous wheels shipped an April 8 build.
+
+**Documentation** — README redesigned with Neural Brain screenshot, dedicated Audit Trail and Shared Memory sections, collapsed framework integrations. 8 stale pre-Octopoda-era docs removed. Every README code block verified end-to-end against the live SDK with real LangChain/CrewAI/AutoGen/OpenAI Agents calls.
 
 ### New Features
 
