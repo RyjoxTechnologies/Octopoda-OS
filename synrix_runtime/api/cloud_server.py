@@ -4082,50 +4082,26 @@ async def admin_activation(auth=Depends(verify_auth)):
     if tenant_id_auth not in _ADMIN_TENANTS:
         raise HTTPException(status_code=403, detail="Admin only")
 
+    # The cross-tenant COUNT requires SECURITY DEFINER bypass of RLS because
+    # the app user can't see other tenants' nodes. See:
+    # scripts/create_admin_activation_fn.py — run once to install the function.
     from synrix_runtime.api.tenant import TenantManager
     tm = TenantManager.get_instance()
     conn = tm._conn()
     windows = {}
     try:
         cur = conn.cursor()
-        # Use a SECURITY DEFINER-style bypass: set role to table owner is not
-        # available, so run with RLS disabled for this read-only admin report.
-        # The app user doesn't have BYPASSRLS, so we instead query with an
-        # explicit tenant-ignoring view pattern via LEFT JOIN counts.
-        for label, interval in [("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days"), ("all_time", "100 years")]:
-            cur.execute(f"""
-                SELECT COUNT(DISTINCT t.tenant_id) FILTER (
-                    WHERE t.tenant_id NOT LIKE 'test_%%'
-                      AND t.email NOT LIKE '%%billing-smoke%%'
-                      AND t.email NOT LIKE '%%signupaudit%%'
-                      AND t.email NOT LIKE '%%verify-nullbyte%%'
-                ) AS signups,
-                COUNT(DISTINCT t.tenant_id) FILTER (
-                    WHERE t.verified = true
-                      AND t.tenant_id NOT LIKE 'test_%%'
-                      AND t.email NOT LIKE '%%billing-smoke%%'
-                      AND t.email NOT LIKE '%%signupaudit%%'
-                      AND t.email NOT LIKE '%%verify-nullbyte%%'
-                ) AS verified,
-                COUNT(DISTINCT t.tenant_id) FILTER (
-                    WHERE ak.last_used IS NOT NULL
-                      AND t.tenant_id NOT LIKE 'test_%%'
-                      AND t.email NOT LIKE '%%billing-smoke%%'
-                      AND t.email NOT LIKE '%%signupaudit%%'
-                      AND t.email NOT LIKE '%%verify-nullbyte%%'
-                ) AS api_calls,
-                COUNT(DISTINCT n.tenant_id) FILTER (
-                    WHERE t.tenant_id NOT LIKE 'test_%%'
-                      AND t.email NOT LIKE '%%billing-smoke%%'
-                      AND t.email NOT LIKE '%%signupaudit%%'
-                      AND t.email NOT LIKE '%%verify-nullbyte%%'
-                ) AS activated
-                FROM tenants t
-                LEFT JOIN api_keys ak ON ak.tenant_id = t.tenant_id
-                LEFT JOIN nodes n ON n.tenant_id = t.tenant_id
-                WHERE t.created_at > NOW() - INTERVAL '{interval}'
-            """)
-            s, v, u, a = cur.fetchone()
+        for label, interval in [("24h", "24 hours"), ("7d", "7 days"),
+                                ("30d", "30 days"), ("all_time", "100 years")]:
+            try:
+                cur.execute(
+                    "SELECT * FROM admin_cohort_activation(%s::interval)",
+                    (interval,)
+                )
+                s, v, u, a = cur.fetchone()
+            except Exception as e:
+                logger.error("admin_cohort_activation(%s) failed: %s", interval, e)
+                s = v = u = a = 0
             windows[label] = {
                 "signups": s, "verified": v, "used_api": u, "activated": a,
                 "signup_to_verified_pct": round((v / s) * 100, 1) if s else 0,
@@ -4183,7 +4159,8 @@ async def admin_health(auth=Depends(verify_auth)):
                             "error": f"{type(e).__name__}: {e}"[:200]})
             return None
 
-    runtime = _step("get_runtime", lambda: _get_runtime(test_agent, auth))
+    runtime = _step("register_and_get_runtime",
+                    lambda: _get_runtime(test_agent, auth, register=True))
     if runtime:
         # Null-byte regression test — this is the exact bug that hid for months
         _step("write_with_null_byte",
