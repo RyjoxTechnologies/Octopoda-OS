@@ -480,24 +480,40 @@ class AgentRuntime:
     def _store_extraction(self, extraction, source_node_id: int, _background: bool = False):
         """Store extracted entities and relationships in the knowledge graph.
 
+        Treats add_entity/add_relationship return values of 0/None as failures
+        (the backends use 0 as 'did not write'). Logs every skipped relationship
+        with the reason so we can see when the KG pipeline is silently dropping
+        data — historically this block silently lost every edge when any entity
+        write failed.
+
         Args:
             _background: If True, skip Python write lock on SQLite operations.
                          Used by background enrichment to avoid blocking foreground writes.
         """
         entity_ids = {}
+        failed_entities = 0
         for ent_name, ent_type in extraction.entities:
             eid = self.backend.add_entity(
                 name=ent_name, entity_type=ent_type,
                 source_node_id=source_node_id,
                 _background=_background,
             )
-            if eid is not None:
+            # Treat 0 / None as failure (backends use 0 for failed writes)
+            if eid:
                 entity_ids[ent_name] = eid
+            else:
+                failed_entities += 1
+                logger.warning(
+                    "KG entity write failed | name=%r type=%s node_id=%s",
+                    (ent_name or "")[:80], ent_type, source_node_id,
+                )
 
+        skipped_rels = 0
+        stored_rels = 0
         for subj, rel, obj in extraction.relationships:
             src_id = entity_ids.get(subj)
             tgt_id = entity_ids.get(obj)
-            if src_id is None:
+            if not src_id:
                 src_id = self.backend.add_entity(
                     name=subj, entity_type="UNKNOWN",
                     source_node_id=source_node_id,
@@ -505,7 +521,7 @@ class AgentRuntime:
                 )
                 if src_id:
                     entity_ids[subj] = src_id
-            if tgt_id is None:
+            if not tgt_id:
                 tgt_id = self.backend.add_entity(
                     name=obj, entity_type="UNKNOWN",
                     source_node_id=source_node_id,
@@ -514,11 +530,28 @@ class AgentRuntime:
                 if tgt_id:
                     entity_ids[obj] = tgt_id
             if src_id and tgt_id:
-                self.backend.add_relationship(
+                rel_id = self.backend.add_relationship(
                     source_entity_id=src_id, target_entity_id=tgt_id,
                     relation=rel, source_node_id=source_node_id,
                     _background=_background,
                 )
+                if rel_id:
+                    stored_rels += 1
+                else:
+                    logger.warning(
+                        "KG relationship write failed | src=%s tgt=%s rel=%r",
+                        src_id, tgt_id, (rel or "")[:60],
+                    )
+            else:
+                skipped_rels += 1
+
+        if failed_entities or skipped_rels:
+            logger.info(
+                "KG extraction summary | node_id=%s entities=%d failed_entities=%d "
+                "rels_stored=%d rels_skipped=%d",
+                source_node_id, len(entity_ids), failed_entities,
+                stored_rels, skipped_rels,
+            )
 
     def recall(self, key: str) -> RecallResult:
         """Recall a memory from Synrix."""

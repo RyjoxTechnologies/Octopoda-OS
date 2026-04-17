@@ -24,6 +24,77 @@ from typing import Optional, List, Dict, Any, Union
 logger = logging.getLogger("synrix.postgres")
 
 # ---------------------------------------------------------------------------
+# Global defense: strip null bytes from every string before it reaches Postgres.
+#
+# Postgres rejects \x00 in TEXT columns and \u0000 escape sequences in JSONB
+# columns with "invalid input syntax for type json" / "cannot contain NUL".
+# Some legitimate LLM output (especially byte-level tokenizers) and unsanitized
+# user input contains these, and they silently broke writes for ~67% of new
+# users before we caught it (2026-04-17).
+#
+# Register a psycopg2 adapter that strips null bytes from every string being
+# sent to Postgres. This is belt-and-braces on top of the _sanitize_for_pg_json
+# call inside add_node — ensures we can never regress again from a new call
+# site that forgets to sanitize.
+# ---------------------------------------------------------------------------
+
+_ADAPTER_REGISTERED = False
+_ADAPTER_LOCK = threading.Lock()
+
+
+def _report_to_sentry(exc: Exception, op: str = "", **context):
+    """Report an otherwise-silently-caught DB error to Sentry with context.
+
+    No-op if Sentry SDK isn't available/initialized. Never raises.
+    The previous silent-fail pattern left these errors invisible in prod —
+    silent failures in critical write paths blocked ~67% of new user
+    activations until we caught the null-byte bug on 2026-04-17.
+    """
+    try:
+        import sentry_sdk
+        with sentry_sdk.push_scope() as scope:
+            scope.set_tag("db_op", op)
+            for k, v in context.items():
+                if v is not None:
+                    scope.set_extra(k, v)
+            sentry_sdk.capture_exception(exc)
+    except Exception:
+        # Sentry not installed / not initialized. Silent-swallowing here is
+        # OK because the primary `logger.error` at the call site already
+        # recorded everything.
+        pass
+
+
+def _register_null_byte_adapter():
+    """Register a psycopg2 string adapter that strips NUL bytes.
+
+    Idempotent. Called on first client initialization.
+    """
+    global _ADAPTER_REGISTERED
+    if _ADAPTER_REGISTERED:
+        return
+    with _ADAPTER_LOCK:
+        if _ADAPTER_REGISTERED:
+            return
+        try:
+            import psycopg2.extensions as ext
+
+            def _adapt_str(value: str):
+                # Strip both the literal NUL and the JSON-escaped NUL
+                if "\x00" in value:
+                    value = value.replace("\x00", "")
+                if "\\u0000" in value:
+                    value = value.replace("\\u0000", "")
+                q = ext.QuotedString(value)
+                return q
+
+            ext.register_adapter(str, _adapt_str)
+            _ADAPTER_REGISTERED = True
+            logger.info("Registered psycopg2 null-byte stripper (global defense)")
+        except Exception as e:
+            logger.error("Could not register null-byte adapter: %s", e)
+
+# ---------------------------------------------------------------------------
 # Connection pool (shared across all SynrixPostgresClient instances)
 # ---------------------------------------------------------------------------
 
@@ -44,6 +115,7 @@ def _get_pool(dsn: str = None):
         dsn = dsn or os.environ.get("DATABASE_URL", "")
         if not dsn:
             raise ValueError("DATABASE_URL not set and no dsn provided")
+        _register_null_byte_adapter()  # Global defense vs NUL bytes
         _pool = pg_pool.ThreadedConnectionPool(
             minconn=1,
             maxconn=12,
@@ -366,22 +438,31 @@ class SynrixPostgresClient:
             return count
         except Exception as e:
             conn.rollback()
-            logger.error("add_fact_embeddings error: %s", e)
+            logger.error("add_fact_embeddings error: %s | tenant=%s node_id=%s fact_count=%d",
+                         e, self.tenant_id, node_id, len(facts))
+            _report_to_sentry(e, op="add_fact_embeddings",
+                              tenant_id=self.tenant_id, node_id=node_id,
+                              fact_count=len(facts))
             return 0
         finally:
             self._release(conn)
 
-    def update_node_embedding(self, node_id: int, embedding, collection: str = "default") -> None:
-        """Update the embedding on an existing node."""
+    def update_node_embedding(self, node_id: int, embedding, collection: str = "default") -> bool:
+        """Update the embedding on an existing node. Returns True on success."""
         conn = self._conn()
         try:
             cur = conn.cursor()
             emb_str = _embedding_to_pgvector(embedding)
             cur.execute("UPDATE nodes SET embedding = %s WHERE id = %s", (emb_str, node_id))
             conn.commit()
+            return True
         except Exception as e:
             conn.rollback()
-            logger.error("update_node_embedding error: %s", e)
+            logger.error("update_node_embedding error: %s | tenant=%s node_id=%s",
+                         e, self.tenant_id, node_id)
+            _report_to_sentry(e, op="update_node_embedding",
+                              tenant_id=self.tenant_id, node_id=node_id)
+            return False
         finally:
             self._release(conn)
 
@@ -555,7 +636,11 @@ class SynrixPostgresClient:
             return entity_id
         except Exception as e:
             conn.rollback()
-            logger.error("upsert_entity error: %s", e)
+            logger.error("upsert_entity error: %s | tenant=%s name=%r type=%s",
+                         e, self.tenant_id, name[:60] if name else None, entity_type)
+            _report_to_sentry(e, op="upsert_entity",
+                              tenant_id=self.tenant_id, entity_name=name,
+                              entity_type=entity_type)
             return 0
         finally:
             self._release(conn)
@@ -619,7 +704,13 @@ class SynrixPostgresClient:
             return rel_id
         except Exception as e:
             conn.rollback()
-            logger.error("add_relationship error: %s", e)
+            logger.error("add_relationship error: %s | tenant=%s src=%s tgt=%s rel=%r",
+                         e, self.tenant_id, source_entity_id, target_entity_id, relation)
+            _report_to_sentry(e, op="add_relationship",
+                              tenant_id=self.tenant_id,
+                              source_entity_id=source_entity_id,
+                              target_entity_id=target_entity_id,
+                              relation=relation)
             return 0
         finally:
             self._release(conn)

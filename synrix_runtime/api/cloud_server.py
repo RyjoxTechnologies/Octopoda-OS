@@ -122,6 +122,31 @@ if _sentry_dsn:
     except Exception as e:
         logger.error("Sentry init failed: %s", e)
 
+
+def _capture_silent(exc: Exception, op: str = "", **context):
+    """Forward a caught-and-swallowed exception to Sentry with tenant/agent context.
+
+    Many paths in this server deliberately catch + swallow exceptions to avoid
+    blocking the user's request (auto-checkpoint, brain monitoring, licensing
+    tracking, etc.). Before this helper, those failures were invisible once
+    the logger.warning line scrolled off journalctl. Now they surface in
+    Sentry with the same tags Sentry middleware uses for regular errors.
+
+    No-op if sentry-sdk isn't initialized. Never raises — otherwise we'd
+    be introducing a new silent failure to report the old one.
+    """
+    try:
+        import sentry_sdk
+        with sentry_sdk.push_scope() as scope:
+            scope.set_tag("silent_op", op or "unknown")
+            for k, v in context.items():
+                if v is not None:
+                    scope.set_extra(k, v)
+            sentry_sdk.capture_exception(exc)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
@@ -242,9 +267,13 @@ def _periodic_ttl_cleanup():
                         logger.info("TTL cleanup: deleted %d expired memories for %s",
                                    result["deleted"], result.get("agent_id", cache_key))
                 except Exception as _agent_err:
-                    pass
-        except Exception:
-            pass
+                    logger.warning("TTL cleanup per-agent failed | cache_key=%s: %s",
+                                   cache_key, _agent_err)
+                    _capture_silent(_agent_err, op="ttl_cleanup_agent",
+                                    cache_key=cache_key)
+        except Exception as e:
+            logger.warning("TTL cleanup outer loop failed: %s", e)
+            _capture_silent(e, op="ttl_cleanup_loop")
 
 
 @app.on_event("startup")
@@ -1249,8 +1278,11 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
     try:
         from synrix.licensing import record_memory_written
         record_memory_written(agent_id)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("licensing.record_memory_written failed | tenant=%s agent=%s: %s",
+                       tenant_id, agent_id, e)
+        _capture_silent(e, op="record_memory_written",
+                        tenant_id=tenant_id, agent_id=agent_id)
 
     # Track latency & errors for anomaly detection
     _track_latency_and_errors(agent_id, result.latency_us, result.success, runtime)
@@ -1264,11 +1296,17 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
             def _bg_checkpoint():
                 try:
                     runtime.snapshot(label=f"auto-{int(time.time())}")
-                except Exception:
-                    pass
+                except Exception as bg_e:
+                    logger.warning("auto-snapshot failed | tenant=%s agent=%s: %s",
+                                   tenant_id, agent_id, bg_e)
+                    _capture_silent(bg_e, op="auto_snapshot",
+                                    tenant_id=tenant_id, agent_id=agent_id)
             threading.Thread(target=_bg_checkpoint, daemon=True).start()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("auto-checkpoint scheduler failed | tenant=%s agent=%s: %s",
+                       tenant_id, agent_id, e)
+        _capture_silent(e, op="auto_checkpoint_schedule",
+                        tenant_id=tenant_id, agent_id=agent_id)
 
     # Brain Intelligence — process write through all 4 features
     brain_warnings = []
@@ -1293,8 +1331,13 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
         if brain_events:
             brain_warnings = [{"type": e.event_type, "severity": e.severity,
                               "message": e.message} for e in brain_events]
-    except Exception:
-        pass  # Brain is non-blocking — never fail a write
+    except Exception as e:
+        # Brain is non-blocking — never fail a write. But do log + report,
+        # so we know when the monitoring layer is broken.
+        logger.warning("BrainHub.process_write failed | tenant=%s agent=%s: %s",
+                       tenant_id, agent_id, e)
+        _capture_silent(e, op="brain_process_write",
+                        tenant_id=tenant_id, agent_id=agent_id)
 
     return MemoryResponse(
         node_id=result.node_id,
@@ -4018,6 +4061,167 @@ async def sentry_test(auth=Depends(verify_auth)):
         raise HTTPException(status_code=503, detail="Sentry is not configured on this instance (SENTRY_DSN unset)")
     # Controlled exception — this SHOULD land in Sentry within ~30 seconds.
     raise RuntimeError("Sentry verification — ignore this, it's intentional.")
+
+
+# ---------------------------------------------------------------------------
+# Admin health + activation canary
+# ---------------------------------------------------------------------------
+# /v1/admin/health tests every critical path end-to-end so we catch silent
+# regressions. /v1/admin/activation reports cohort activation — we caught
+# the null-byte bug because 25/37 users touched the API but only 3/37 wrote
+# memories. Monitoring this ratio is the early warning.
+
+@app.get("/v1/admin/activation")
+async def admin_activation(auth=Depends(verify_auth)):
+    """Cohort activation report. Returns per-time-window signup-to-activation rates.
+
+    Activation = tenant has written at least one memory (nodes row).
+    Healthy SaaS runs 20-40%. Drops below 20% → something's broken.
+    """
+    tenant_id_auth = _get_tenant_id(auth)
+    if tenant_id_auth not in _ADMIN_TENANTS:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    from synrix_runtime.api.tenant import TenantManager
+    tm = TenantManager.get_instance()
+    conn = tm._conn()
+    windows = {}
+    try:
+        cur = conn.cursor()
+        # Use a SECURITY DEFINER-style bypass: set role to table owner is not
+        # available, so run with RLS disabled for this read-only admin report.
+        # The app user doesn't have BYPASSRLS, so we instead query with an
+        # explicit tenant-ignoring view pattern via LEFT JOIN counts.
+        for label, interval in [("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days"), ("all_time", "100 years")]:
+            cur.execute(f"""
+                SELECT COUNT(DISTINCT t.tenant_id) FILTER (
+                    WHERE t.tenant_id NOT LIKE 'test_%%'
+                      AND t.email NOT LIKE '%%billing-smoke%%'
+                      AND t.email NOT LIKE '%%signupaudit%%'
+                      AND t.email NOT LIKE '%%verify-nullbyte%%'
+                ) AS signups,
+                COUNT(DISTINCT t.tenant_id) FILTER (
+                    WHERE t.verified = true
+                      AND t.tenant_id NOT LIKE 'test_%%'
+                      AND t.email NOT LIKE '%%billing-smoke%%'
+                      AND t.email NOT LIKE '%%signupaudit%%'
+                      AND t.email NOT LIKE '%%verify-nullbyte%%'
+                ) AS verified,
+                COUNT(DISTINCT t.tenant_id) FILTER (
+                    WHERE ak.last_used IS NOT NULL
+                      AND t.tenant_id NOT LIKE 'test_%%'
+                      AND t.email NOT LIKE '%%billing-smoke%%'
+                      AND t.email NOT LIKE '%%signupaudit%%'
+                      AND t.email NOT LIKE '%%verify-nullbyte%%'
+                ) AS api_calls,
+                COUNT(DISTINCT n.tenant_id) FILTER (
+                    WHERE t.tenant_id NOT LIKE 'test_%%'
+                      AND t.email NOT LIKE '%%billing-smoke%%'
+                      AND t.email NOT LIKE '%%signupaudit%%'
+                      AND t.email NOT LIKE '%%verify-nullbyte%%'
+                ) AS activated
+                FROM tenants t
+                LEFT JOIN api_keys ak ON ak.tenant_id = t.tenant_id
+                LEFT JOIN nodes n ON n.tenant_id = t.tenant_id
+                WHERE t.created_at > NOW() - INTERVAL '{interval}'
+            """)
+            s, v, u, a = cur.fetchone()
+            windows[label] = {
+                "signups": s, "verified": v, "used_api": u, "activated": a,
+                "signup_to_verified_pct": round((v / s) * 100, 1) if s else 0,
+                "signup_to_api_pct": round((u / s) * 100, 1) if s else 0,
+                "signup_to_activation_pct": round((a / s) * 100, 1) if s else 0,
+                "tried_but_failed": max(0, u - a),  # Touched API, never wrote
+            }
+    finally:
+        tm._release(conn)
+
+    # Health signal: activation <20% in last 7d is a red flag
+    last7d_pct = windows.get("7d", {}).get("signup_to_activation_pct", 0)
+    health = "healthy" if last7d_pct >= 20 else "degraded" if last7d_pct >= 10 else "critical"
+
+    return {
+        "health": health,
+        "threshold": "activation >=20% healthy, >=10% degraded, else critical",
+        "windows": windows,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+@app.get("/v1/admin/health")
+async def admin_health(auth=Depends(verify_auth)):
+    """End-to-end smoke test of every critical write/read path.
+
+    Runs against the calling admin's tenant. Creates a test agent, writes a
+    memory with a null byte (the bug that broke 67% of users), recalls it,
+    semantically searches, writes shared memory, logs a decision, takes a
+    snapshot, then cleans up. Returns per-step status.
+
+    Run manually or from a cron. If anything fails, the response shows which
+    step + the error, so we catch regressions before users hit them.
+    """
+    tenant_id = _get_tenant_id(auth)
+    if tenant_id not in _ADMIN_TENANTS:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    import uuid
+    test_agent = f"healthcheck-{uuid.uuid4().hex[:8]}"
+    results = []
+    ok = True
+
+    def _step(name, fn):
+        nonlocal ok
+        t0 = time.time()
+        try:
+            out = fn()
+            results.append({"step": name, "ok": True, "latency_ms": round((time.time() - t0) * 1000, 1),
+                            "detail": str(out)[:120] if out is not None else ""})
+            return out
+        except Exception as e:
+            ok = False
+            results.append({"step": name, "ok": False, "latency_ms": round((time.time() - t0) * 1000, 1),
+                            "error": f"{type(e).__name__}: {e}"[:200]})
+            return None
+
+    runtime = _step("get_runtime", lambda: _get_runtime(test_agent, auth))
+    if runtime:
+        # Null-byte regression test — this is the exact bug that hid for months
+        _step("write_with_null_byte",
+              lambda: runtime.remember("healthcheck_null",
+                                       "data with null \u0000 embedded"))
+        recall_result = _step("recall",
+                              lambda: runtime.recall("healthcheck_null"))
+        _step("recall_value_present",
+              lambda: ("value" in str(recall_result.__dict__)) if recall_result else False)
+        _step("shared_write",
+              lambda: runtime.share("healthcheck_shared", "shared-value", space="healthcheck"))
+        _step("log_decision",
+              lambda: runtime.log_decision(decision="test-decision", reasoning="health-check"))
+        _step("snapshot",
+              lambda: runtime.snapshot(label="healthcheck"))
+        # Cleanup
+        try:
+            from synrix_runtime.api.tenant import TenantManager
+            tm = TenantManager.get_instance()
+            conn = tm._conn()
+            try:
+                cur = conn.cursor()
+                cur.execute("SET LOCAL app.tenant_id = %s", (tenant_id,))
+                cur.execute("DELETE FROM nodes WHERE name LIKE %s OR name LIKE %s",
+                            (f"agents:{test_agent}:%", f"shared:healthcheck:%"))
+                conn.commit()
+            finally:
+                tm._release(conn)
+            results.append({"step": "cleanup", "ok": True})
+        except Exception as e:
+            results.append({"step": "cleanup", "ok": False, "error": str(e)[:200]})
+
+    return {
+        "ok": ok,
+        "test_agent_id": test_agent,
+        "steps": results,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -415,7 +415,12 @@ class SynrixAgentBackend:
                 collection=self.collection,
                 _background=_background,
             )
-        except Exception:
+        except Exception as e:
+            # Previously silent. Log so failures surface in Sentry + journalctl.
+            logger.error(
+                "agent_backend.store_fact_embeddings failed | node_id=%s node_name=%r facts=%d: %s",
+                node_id, node_name, len(facts) if facts else 0, e,
+            )
             return 0
 
     def semantic_search(
@@ -532,7 +537,11 @@ class SynrixAgentBackend:
                 source_node_id=source_node_id,
                 _background=_background,
             )
-        except Exception:
+        except Exception as e:
+            logger.error(
+                "agent_backend.add_entity failed | name=%r type=%s: %s",
+                (name or "")[:80], entity_type, e,
+            )
             return None
 
     def add_relationship(
@@ -557,7 +566,11 @@ class SynrixAgentBackend:
                 source_node_id=source_node_id,
                 _background=_background,
             )
-        except Exception:
+        except Exception as e:
+            logger.error(
+                "agent_backend.add_relationship failed | src=%s tgt=%s rel=%r: %s",
+                source_entity_id, target_entity_id, (relation or "")[:60], e,
+            )
             return None
 
     def query_entity(self, name: str) -> Optional[Dict[str, Any]]:
