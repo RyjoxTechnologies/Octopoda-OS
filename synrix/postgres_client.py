@@ -65,6 +65,31 @@ def reset_pool():
 # Embedding helpers
 # ---------------------------------------------------------------------------
 
+_NULL_BYTE_LITERAL = "\\u0000"
+
+
+def _sanitize_for_pg_json(s: str) -> str:
+    """Strip characters Postgres JSONB rejects.
+
+    Postgres rejects two classes of strings that are legal in Python/JSON:
+      1. Literal null bytes (``\\x00``) in the raw string.
+      2. The JSON-escaped ``\\u0000`` sequence (even inside a valid JSON payload).
+    Lone UTF-16 surrogates also fail to encode; json.dumps with ensure_ascii=False
+    generally emits them literally, which psycopg2 will then reject.
+
+    Returns a string safe to pass as a JSONB column value.
+    """
+    if not s:
+        return s
+    # Raw null byte (rare but possible through edge cases in input strings)
+    if "\x00" in s:
+        s = s.replace("\x00", "")
+    # Escaped null byte inside a JSON string — this is the common case.
+    if _NULL_BYTE_LITERAL in s:
+        s = s.replace(_NULL_BYTE_LITERAL, "")
+    return s
+
+
 def _embedding_to_pgvector(embedding) -> Optional[str]:
     """Convert numpy array or bytes to pgvector string format '[0.1,0.2,...]'."""
     if embedding is None:
@@ -194,6 +219,12 @@ class SynrixPostgresClient:
             metadata = {"type": node_type}
             emb_str = _embedding_to_pgvector(embedding)
 
+            # Sanitize for Postgres JSONB (strips null bytes and lone surrogates,
+            # both of which psycopg2/PG reject with "invalid input syntax for type json"
+            # even though they're technically legal in Python strings).
+            data_serialized = _sanitize_for_pg_json(json.dumps(data_json, ensure_ascii=False))
+            meta_serialized = _sanitize_for_pg_json(json.dumps(metadata, ensure_ascii=False))
+
             # Invalidate previous version (temporal versioning)
             cur.execute(
                 "UPDATE nodes SET valid_until = %s "
@@ -205,7 +236,7 @@ class SynrixPostgresClient:
             cur.execute(
                 "INSERT INTO nodes (tenant_id, name, data, metadata, embedding, valid_from, valid_until) "
                 "VALUES (%s, %s, %s, %s, %s, %s, 0) RETURNING id",
-                (self.tenant_id, name, json.dumps(data_json), json.dumps(metadata),
+                (self.tenant_id, name, data_serialized, meta_serialized,
                  emb_str, now)
             )
             node_id = cur.fetchone()[0]
@@ -213,7 +244,11 @@ class SynrixPostgresClient:
             return node_id
         except Exception as e:
             conn.rollback()
-            logger.error("add_node error: %s", e)
+            # Log a richer diagnostic so silent drops are visible in Sentry/logs.
+            data_len = len(data) if isinstance(data, (str, bytes)) else len(str(data))
+            preview = (data if isinstance(data, str) else str(data))[:120]
+            logger.error("add_node error: %s | tenant=%s key=%s data_len=%d data_preview=%r",
+                         e, self.tenant_id, name, data_len, preview)
             return None
         finally:
             self._release(conn)

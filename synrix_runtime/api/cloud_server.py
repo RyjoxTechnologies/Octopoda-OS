@@ -3881,8 +3881,14 @@ async def get_agent_timeline(
         except Exception:
             pass
 
-        # Sort by time
-        events.sort(key=lambda e: e.get("time", 0))
+        # Sort by time — coerce to float so mixed str/int timestamps don't crash
+        def _ts(e):
+            t = e.get("time", 0)
+            try:
+                return float(t)
+            except (TypeError, ValueError):
+                return 0.0
+        events.sort(key=_ts)
         return events[-limit:]
 
     result = await loop.run_in_executor(_executor, _build_timeline)
@@ -3923,7 +3929,13 @@ async def list_checkpoints(agent_id: str, auth=Depends(verify_auth)):
                     "keys_captured": val.get("keys_captured", 0),
                     "auto": str(val.get("label", "")).startswith("auto-"),
                 })
-        checkpoints.sort(key=lambda c: c.get("timestamp", 0), reverse=True)
+        def _cp_ts(c):
+            t = c.get("timestamp", 0)
+            try:
+                return float(t)
+            except (TypeError, ValueError):
+                return 0.0
+        checkpoints.sort(key=_cp_ts, reverse=True)
         return checkpoints
 
     result = await loop.run_in_executor(_executor, _get_checkpoints)
