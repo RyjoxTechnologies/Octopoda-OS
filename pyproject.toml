@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "octopoda"
-version = "3.1.0"
+version = "3.1.1"
 description = "Persistent Memory Kernel for AI Agents — crash recovery, shared memory, audit trail, real-time dashboard"
 readme = "README.md"
 requires-python = ">=3.9"
