@@ -35,6 +35,16 @@ CREATE TABLE IF NOT EXISTS tenants (
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
 
+-- Platform free-tier extraction counter. Separate table so we can do atomic
+-- UPSERT-with-RETURNING across multiple uvicorn workers. Previous
+-- implementation used an in-process threading.Lock which allowed parallel
+-- writes hitting different workers to overwrite each other's counters.
+CREATE TABLE IF NOT EXISTS platform_usage (
+    tenant_id   TEXT PRIMARY KEY,
+    used        INTEGER NOT NULL DEFAULT 0,
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS api_keys (
     key_hash        TEXT PRIMARY KEY,
     tenant_id       TEXT NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
