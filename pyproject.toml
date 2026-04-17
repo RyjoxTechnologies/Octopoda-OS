@@ -73,6 +73,9 @@ all-ai = [
     "faiss-cpu>=1.7.0",
 ]
 telemetry = ["psutil>=5.9.0"]
+monitoring = [
+    "sentry-sdk[fastapi]>=2.0.0",
+]
 all = [
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.23.0",

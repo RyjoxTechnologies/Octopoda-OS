@@ -97,6 +97,32 @@ from synrix_runtime.log import get_logger
 logger = get_logger("api")
 
 # ---------------------------------------------------------------------------
+# Sentry — error + performance monitoring. Gated on SENTRY_DSN env var.
+# ---------------------------------------------------------------------------
+# No-op unless SENTRY_DSN is set; safe for local dev, CI, and pip install users
+# who don't install the [monitoring] extra.
+_sentry_dsn = os.environ.get("SENTRY_DSN", "").strip()
+if _sentry_dsn:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=_sentry_dsn,
+            # FastApiIntegration attaches automatically when `fastapi` is importable.
+            traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
+            profiles_sample_rate=0.0,
+            send_default_pii=False,  # do not leak request headers / IPs
+            release=os.environ.get("OCTOPODA_VERSION", "3.1.0"),
+            environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
+        )
+        logger.info("Sentry initialized (release=%s, env=%s)",
+                    os.environ.get("OCTOPODA_VERSION", "3.1.0"),
+                    os.environ.get("SENTRY_ENVIRONMENT", "production"))
+    except ImportError:
+        logger.warning("SENTRY_DSN is set but sentry-sdk is not installed — run: pip install 'octopoda[monitoring]'")
+    except Exception as e:
+        logger.error("Sentry init failed: %s", e)
+
+# ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
@@ -282,6 +308,18 @@ async def rate_limit_middleware(request: Request, call_next):
             if tenant:
                 tenant_id = tenant.get("tenant_id", "anonymous")
                 plan = tenant.get("plan", "free")
+        except Exception:
+            pass
+
+    # Tag Sentry scope with tenant + plan so errors are filterable by account.
+    # Safe no-op if Sentry is not configured.
+    if _sentry_dsn:
+        try:
+            import sentry_sdk
+            sentry_sdk.set_tag("tenant_id", tenant_id)
+            sentry_sdk.set_tag("plan", plan)
+            if tenant_id != "anonymous":
+                sentry_sdk.set_user({"id": tenant_id})
         except Exception:
             pass
 
@@ -3952,3 +3990,19 @@ async def get_agent_cost(agent_id: str, auth=Depends(verify_auth)):
 
     result = await loop.run_in_executor(_executor, _get_cost)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Sentry verification endpoint
+# ---------------------------------------------------------------------------
+# Triggers a controlled exception to confirm Sentry is receiving events.
+# Restricted to platform-owner tenants so random users can't flood your quota.
+@app.get("/v1/admin/sentry-test")
+async def sentry_test(auth=Depends(verify_auth)):
+    tenant_id = _get_tenant_id(auth)
+    if tenant_id not in _ADMIN_TENANTS:
+        raise HTTPException(status_code=403, detail="Admin only")
+    if not _sentry_dsn:
+        raise HTTPException(status_code=503, detail="Sentry is not configured on this instance (SENTRY_DSN unset)")
+    # Controlled exception — this SHOULD land in Sentry within ~30 seconds.
+    raise RuntimeError("Sentry verification — ignore this, it's intentional.")
