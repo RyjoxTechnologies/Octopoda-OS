@@ -5,15 +5,115 @@
     <link>https://octopodas.com/blog</link>
     <description>Product updates, engineering deep dives, and guides for building AI agents with persistent memory.</description>
     <language>en</language>
+    <lastBuildDate>Sun, 13 Apr 2026 00:00:00 GMT</lastBuildDate>
     <atom:link href="https://octopodas.com/rss.xml" rel="self" type="application/rss+xml"/>
 
     <item>
-      <title>We Analysed 1 Million AI Agent Operations. Here's What Actually Happens in Production.</title>
+      <title>The Morality of AI in Warfare: Who Is Deploying It, How, and What It Means for All of Us</title>
+      <link>https://octopodas.com/blog/ai-warfare-morality</link>
+      <guid>https://octopodas.com/blog/ai-warfare-morality</guid>
+      <description>AI is selecting bombing targets, compressing kill chains to minutes, and lowering the political cost of war. Here is exactly who is deploying it and what it means.</description>
+      <pubDate>Sun, 13 Apr 2026 00:00:00 GMT</pubDate>
+      <category>Deep Dives</category>
+    </item>
+
+    <item>
+      <title>AI Agent Failure Modes: What 1,600 Traces Reveal About Loops, Token Waste, and Detection</title>
+      <link>https://octopodas.com/blog/ai-agent-failure-modes</link>
+      <guid>https://octopodas.com/blog/ai-agent-failure-modes</guid>
+      <description>Research shows 41-86% of multi-agent systems fail. We break down the data on loops, token waste, and detection methods that actually work.</description>
+      <pubDate>Sun, 13 Apr 2026 00:00:00 GMT</pubDate>
+      <category>Deep Dives</category>
+    </item>
+
+    <item>
+      <title>10 AI Experts Predict What Agents Will Look Like by 2030</title>
+      <link>https://octopodas.com/blog/ai-experts-predict-agents-2030</link>
+      <guid>https://octopodas.com/blog/ai-experts-predict-agents-2030</guid>
+      <description>Hinton, Amodei, Suleyman, Bengio, and 6 more AI leaders predict the future of AI agents. 8 of 10 outlooks are bleak. Real quotes, real data.</description>
+      <pubDate>Tue, 07 Apr 2026 00:00:00 GMT</pubDate>
+      <category>AI Agents</category>
+    </item>
+
+    <item>
+      <title>What Claude Mythos Means for AI Agents (And What to Build Now)</title>
+      <link>https://octopodas.com/blog/claude-mythos-ai-agents</link>
+      <guid>https://octopodas.com/blog/claude-mythos-ai-agents</guid>
+      <description>Claude Mythos scores 93.9% on SWE-bench and finds zero-days autonomously. We break down what this step change means for AI agent developers and why agent memory matters more than ever.</description>
+      <pubDate>Fri, 03 Apr 2026 00:00:00 GMT</pubDate>
+      <category>News</category>
+    </item>
+
+    <item>
+      <title>The Hidden Cost of AI Agent Loops Nobody Is Talking About</title>
+      <link>https://octopodas.com/blog/hidden-cost-ai-agent-loops</link>
+      <guid>https://octopodas.com/blog/hidden-cost-ai-agent-loops</guid>
+      <description>AI agent loops silently burn tokens and cash. Learn how to detect, measure, and stop agent loops before they drain your budget. Real data and code inside.</description>
+      <pubDate>Thu, 19 Mar 2026 00:00:00 GMT</pubDate>
+      <category>Deep Dives</category>
+    </item>
+
+    <item>
+      <title>When AI Agents Go Rogue: 7 Real Cases That Should Worry Every Developer</title>
+      <link>https://octopodas.com/blog/ai-agents-gone-rogue-real-cases</link>
+      <guid>https://octopodas.com/blog/ai-agents-gone-rogue-real-cases</guid>
+      <description>Real cases of AI agents going wrong — from data exfiltration to $47K cloud bills. Learn what failed technically and how to build agents with proper guardrails.</description>
+      <pubDate>Thu, 12 Mar 2026 00:00:00 GMT</pubDate>
+      <category>AI Agents</category>
+    </item>
+
+    <item>
+      <title>The Pentagon Wanted Autonomous Agents With No Restrictions. One Company Said No.</title>
+      <link>https://octopodas.com/blog/pentagon-autonomous-agents-anthropic</link>
+      <guid>https://octopodas.com/blog/pentagon-autonomous-agents-anthropic</guid>
+      <description>Anthropic refused to give the military unrestricted AI access. They lost a $200M contract and got blacklisted. OpenAI stepped in within hours.</description>
+      <pubDate>Thu, 05 Mar 2026 00:00:00 GMT</pubDate>
+      <category>News</category>
+    </item>
+
+    <item>
+      <title>How Much Money Are Your AI Agents Wasting Without You Knowing It?</title>
+      <link>https://octopodas.com/blog/ai-agent-token-waste</link>
+      <guid>https://octopodas.com/blog/ai-agent-token-waste</guid>
+      <description>AI agents waste tokens through loops, redundant calls, and context loss. Learn how to detect hidden token waste and cut your LLM costs with real data.</description>
+      <pubDate>Fri, 27 Feb 2026 00:00:00 GMT</pubDate>
+      <category>Engineering</category>
+    </item>
+
+    <item>
+      <title>I Tracked What Actually Happens Inside AI Agents for 30 Days</title>
+      <link>https://octopodas.com/blog/30-days-tracking-ai-agents</link>
+      <guid>https://octopodas.com/blog/30-days-tracking-ai-agents</guid>
+      <description>847 loops caught, 23% wasted runtime, agents contradicting each other 31% of the time. Here's what real production data from 70 developers revealed.</description>
+      <pubDate>Wed, 04 Feb 2026 00:00:00 GMT</pubDate>
+      <category>Engineering</category>
+    </item>
+
+    <item>
+      <title>We Analysed 1 Million AI Agent Operations</title>
       <link>https://octopodas.com/blog/1-million-agent-operations</link>
       <guid>https://octopodas.com/blog/1-million-agent-operations</guid>
-      <description>Raw operational data from real agents in production. The amnesia tax, loop economics, multi-agent performance gaps, and the brutal token economy with real numbers.</description>
-      <pubDate>Wed, 02 Apr 2025 00:00:00 GMT</pubDate>
-      <category>Engineering</category>
+      <description>Raw operational data from real agents in production. The amnesia tax, loop economics, multi-agent performance gaps, and the brutal token economy — with real numbers.</description>
+      <pubDate>Thu, 29 Jan 2026 00:00:00 GMT</pubDate>
+      <category>Deep Dives</category>
+    </item>
+
+    <item>
+      <title>How to Add Persistent Memory to a LangChain Agent</title>
+      <link>https://octopodas.com/blog/langchain-persistent-memory-guide</link>
+      <guid>https://octopodas.com/blog/langchain-persistent-memory-guide</guid>
+      <description>Add LangChain persistent memory to any agent in three lines of Python. Works locally with SQLite, includes semantic search. Free, open source, MIT licensed.</description>
+      <pubDate>Wed, 14 Jan 2026 00:00:00 GMT</pubDate>
+      <category>Tutorials</category>
+    </item>
+
+    <item>
+      <title>10 Things That Could Go Wrong With AI Agents</title>
+      <link>https://octopodas.com/blog/10-things-wrong-ai-agents</link>
+      <guid>https://octopodas.com/blog/10-things-wrong-ai-agents</guid>
+      <description>From strategic deception to irreversible actions to the accountability gap — here are 10 things that can and do go wrong with AI agents, backed by real research.</description>
+      <pubDate>Fri, 19 Dec 2025 00:00:00 GMT</pubDate>
+      <category>AI Agents</category>
     </item>
 
     <item>
@@ -21,7 +121,7 @@
       <link>https://octopodas.com/blog/give-ai-agent-memory-5-minutes</link>
       <guid>https://octopodas.com/blog/give-ai-agent-memory-5-minutes</guid>
       <description>Every AI agent forgets everything when the session ends. Here's how to add persistent memory to any Python agent in about 5 minutes with real, working code.</description>
-      <pubDate>Tue, 01 Apr 2025 00:00:00 GMT</pubDate>
+      <pubDate>Mon, 08 Dec 2025 00:00:00 GMT</pubDate>
       <category>Tutorials</category>
     </item>
 
@@ -29,18 +129,18 @@
       <title>What Happens When AI Agents Start Remembering Everything</title>
       <link>https://octopodas.com/blog/agents-remembering-everything</link>
       <guid>https://octopodas.com/blog/agents-remembering-everything</guid>
-      <description>When we fix the memory problem, we create AI agents that build a permanent, searchable, growing model of everything they interact with. That changes things in ways most developers haven't thought through.</description>
-      <pubDate>Tue, 01 Apr 2025 00:00:00 GMT</pubDate>
-      <category>Industry</category>
+      <description>When we fix the memory problem, we create AI agents that build a permanent, searchable, growing model of everything they interact with.</description>
+      <pubDate>Sat, 22 Nov 2025 00:00:00 GMT</pubDate>
+      <category>Deep Dives</category>
     </item>
 
     <item>
-      <title>I Tracked What Actually Happens Inside AI Agents for 30 Days. The Results Are Wild.</title>
-      <link>https://octopodas.com/blog/30-days-tracking-ai-agents</link>
-      <guid>https://octopodas.com/blog/30-days-tracking-ai-agents</guid>
-      <description>847 loops caught, 23% wasted runtime, agents contradicting each other 31% of the time. Here's what real production data from 70 developers revealed about AI agents.</description>
-      <pubDate>Tue, 01 Apr 2025 00:00:00 GMT</pubDate>
-      <category>Engineering</category>
+      <title>Your AI Agent Has Amnesia and You Probably Haven't Noticed Yet</title>
+      <link>https://octopodas.com/blog/your-ai-agent-has-amnesia</link>
+      <guid>https://octopodas.com/blog/your-ai-agent-has-amnesia</guid>
+      <description>Every agent framework gives you the same pitch. Autonomous agents that reason, plan, and execute. And it works. Until the session ends.</description>
+      <pubDate>Mon, 03 Nov 2025 00:00:00 GMT</pubDate>
+      <category>AI Agents</category>
     </item>
 
     <item>
@@ -48,16 +148,7 @@
       <link>https://octopodas.com/blog/what-are-ai-agents</link>
       <guid>https://octopodas.com/blog/what-are-ai-agents</guid>
       <description>Something shifted in 2025. Developers stopped building chatbots and started building agents. Here's the practical version of what they are, why they matter, and where they fall apart.</description>
-      <pubDate>Tue, 01 Apr 2025 00:00:00 GMT</pubDate>
-      <category>AI Agents</category>
-    </item>
-
-    <item>
-      <title>Your AI Agent Has Amnesia and You Probably Haven't Noticed Yet</title>
-      <link>https://octopodas.com/blog/your-ai-agent-has-amnesia</link>
-      <guid>https://octopodas.com/blog/your-ai-agent-has-amnesia</guid>
-      <description>Every agent framework gives you the same pitch. Autonomous agents that reason, plan, and execute. And it works. Until the session ends. Then your agent wakes up with a complete blank slate.</description>
-      <pubDate>Mon, 31 Mar 2025 00:00:00 GMT</pubDate>
+      <pubDate>Fri, 17 Oct 2025 00:00:00 GMT</pubDate>
       <category>AI Agents</category>
     </item>
   </channel>
