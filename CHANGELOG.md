@@ -1,5 +1,39 @@
 # Changelog
 
+## 3.1.1 (2026-04-17)
+
+### Critical bugfix — fixes silent activation failures
+Two production bugs were silently blocking ~67% of new users from writing their first memory. Audit found 11 silent-failure sites total. This release:
+
+- **Null-byte write corruption fixed.** `add_node` silently failed whenever user data contained `\u0000` (common in LLM output, byte-level tokenizer artifacts, binary-ish data). Postgres JSONB rejects `\u0000` even though it's legal JSON; the old error handler caught it, logged to a channel nobody watched, and returned None — the write *appeared* to succeed but nothing was stored. Fixed two ways:
+  1. `_sanitize_for_pg_json()` strips `\u0000` before INSERT.
+  2. A psycopg2 string-adapter registered at pool init strips NUL bytes from *every* string en route to Postgres. Belt-and-braces defense that prevents any future call site from regressing.
+- **Timeline 500 error fixed.** `GET /v1/agents/{id}/timeline` and `/checkpoints` crashed with `TypeError: '<' not supported between 'str' and 'int'` when events had mixed timestamp types. Sort keys now coerce to float with 0.0 fallback.
+- **Stripe webhook hardening.** Signature parser now rejects missing/malformed `Stripe-Signature` headers cleanly instead of crashing into the error path.
+
+### Knowledge-graph reliability
+- `_store_extraction` previously silently dropped relationships whenever entity writes failed (returned 0). Now every failed entity/relationship logs with context (name, type, source_node_id), and a summary line is emitted for any batch where failures occurred. KG pipeline is no longer invisible.
+
+### Observability
+- Added `_report_to_sentry()` helper used by every caught-and-swallowed DB-write exception in `postgres_client.py` (add_fact_embeddings, update_node_embedding, upsert_entity, add_relationship). Failures now surface in Sentry with `db_op` + `tenant_id` tags.
+- Added `_capture_silent()` helper for the server-side non-blocking paths (licensing tracking, auto-snapshot, brain monitoring, TTL cleanup). These still don't block the user request but now surface in Sentry.
+- Richer SDK-layer logging in `agent_backend.py` (3 sites previously had `except Exception: return 0` with zero logging).
+
+### New admin endpoints
+- `GET /v1/admin/activation` — cohort activation report (signups vs verified vs api-used vs actually-wrote-memory, per 24h/7d/30d/all-time window). Health flagged as `critical` when <10% activation, `degraded` <20%, `healthy` >=20%. Built on a new `admin_cohort_activation()` SECURITY DEFINER function so it bypasses RLS cleanly.
+- `GET /v1/admin/health` — end-to-end smoke test that exercises register → write-with-null-byte → recall → shared → log_decision → snapshot → cleanup. Regression canary for the null-byte bug and every critical write path. Run manually or from a cron.
+- `GET /v1/admin/billing/overview` — paid tenants, MRR/ARR, recent Stripe events (shipped in 3.1.0, documented here).
+
+### Billing emails (shipped mid-3.1.0, documented here)
+- Customer emails on: upgrade (welcome), cancellation (confirmation), payment failure (warning).
+- Owner notifications to `OWNER_NOTIFICATION_EMAIL` env (default `joe@octopodas.com`) on: upgrade, plan change, cancellation, payment failure.
+- All sends are best-effort (wrapped in try/except, never break the webhook response).
+
+### Schema additions
+- `tenants.stripe_customer_id`, `tenants.stripe_subscription_id` — added via `ALTER TABLE IF NOT EXISTS` and in `init.sql`. Without these, `_upgrade_tenant()` would crash on the SQL UPDATE after a real payment and silently leave the customer on `free` tier.
+
+---
+
 ## 3.1.0 (2026-04-16)
 
 ### Highlights since 3.0.9
