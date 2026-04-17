@@ -3165,25 +3165,88 @@ _ADMIN_TENANTS = {"bf1506e1e2bbc462", "1f3442be42cfd12f"}  # platform owner acco
 
 def _check_and_increment_platform_usage(tenant_id: str) -> bool:
     """Atomically check and increment platform free tier counter.
+
+    ATOMICITY: Uses a single UPDATE ... RETURNING against platform_usage
+    so that multiple uvicorn workers cannot double-count or overwrite each
+    other. The previous implementation used an in-process threading.Lock,
+    which did not protect across workers — users could bypass the cap by
+    issuing parallel writes that hit different workers.
+
     Returns True if extraction is allowed, False if limit exceeded.
     Everyone gets 100 free extractions, then must add their own API key.
-    Only admin (platform owner) accounts bypass the limit."""
-    with _platform_usage_lock:
-        if tenant_id in _ADMIN_TENANTS:
-            return True
+    Only admin (platform owner) accounts bypass the limit.
+    """
+    if tenant_id in _ADMIN_TENANTS:
+        return True
 
+    # Fast-path: if we've cached that this tenant is off platform, skip the
+    # DB round-trip. Provider changes are rare (once per 100 writes at most).
+    cached = _tenant_settings.get(tenant_id)
+    if cached and cached.get("llm_provider") not in (None, "platform"):
+        return True
+
+    # Atomic increment — one SQL statement, safe across workers.
+    try:
+        from synrix_runtime.api.tenant import TenantManager
+        tm = TenantManager.get_instance()
+        conn = tm._conn()
+        try:
+            cur = conn.cursor()
+            # UPSERT with returning — postgres guarantees the read is of the
+            # post-update value. Two workers each running this get distinct
+            # increments; neither overwrites the other.
+            cur.execute(
+                """
+                INSERT INTO platform_usage (tenant_id, used)
+                VALUES (%s, 1)
+                ON CONFLICT (tenant_id) DO UPDATE
+                   SET used = platform_usage.used + 1,
+                       updated_at = NOW()
+                RETURNING used
+                """,
+                (tenant_id,),
+            )
+            used = cur.fetchone()[0]
+            conn.commit()
+        finally:
+            tm._release(conn)
+    except Exception as e:
+        logger.error("platform_usage increment failed | tenant=%s: %s", tenant_id, e)
+        _capture_silent(e, op="platform_usage_increment", tenant_id=tenant_id)
+        # Fail open: don't block a legitimate write because our counter DB is down.
+        return True
+
+    if used > _PLATFORM_FREE_LIMIT:
+        # Exceeded — downgrade provider to 'none' once (idempotent across workers)
         settings = _get_tenant_settings(tenant_id)
-        if settings.get("llm_provider") != "platform":
-            return True  # not on platform tier, no limit
-        used = settings.get("platform_extractions_used", 0)
-        if used >= _PLATFORM_FREE_LIMIT:
-            # Exceeded — downgrade to embedding-only
+        if settings.get("llm_provider") == "platform":
             settings["llm_provider"] = "none"
             _save_tenant_settings(tenant_id, settings)
-            return False
-        settings["platform_extractions_used"] = used + 1
-        _save_tenant_settings(tenant_id, settings)
-        return True
+            logger.info("Tenant %s hit platform cap (%d/%d) — llm_provider set to 'none'",
+                        tenant_id, used, _PLATFORM_FREE_LIMIT)
+        return False
+    return True
+
+
+def _read_platform_usage(tenant_id: str) -> int:
+    """Read the current platform_usage counter without incrementing."""
+    try:
+        from synrix_runtime.api.tenant import TenantManager
+        tm = TenantManager.get_instance()
+        conn = tm._conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT used FROM platform_usage WHERE tenant_id = %s",
+                (tenant_id,),
+            )
+            row = cur.fetchone()
+            return row[0] if row else 0
+        finally:
+            tm._release(conn)
+    except Exception as e:
+        logger.warning("platform_usage read failed | tenant=%s: %s", tenant_id, e)
+        return 0
 
 def _increment_platform_usage(tenant_id: str):
     """Backward-compatible wrapper."""
@@ -3223,9 +3286,11 @@ async def get_settings(auth=Depends(verify_auth)):
         "anthropic_model": safe.get("anthropic_model", "claude-haiku-4-5-20251001"),
         "ollama_model": safe.get("ollama_model", "llama3.2"),
     }
-    # Show platform free tier usage if applicable
+    # Show platform free tier usage if applicable — read from atomic counter
+    # (platform_usage table) rather than cached settings, so multi-worker
+    # increments are accurate for display.
     if provider == "platform":
-        used = settings.get("platform_extractions_used", 0)
+        used = _read_platform_usage(tenant_id)
         result["platform_extractions_used"] = used
         result["platform_extractions_limit"] = _PLATFORM_FREE_LIMIT
         result["platform_extractions_remaining"] = max(0, _PLATFORM_FREE_LIMIT - used)
