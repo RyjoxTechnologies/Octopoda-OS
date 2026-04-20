@@ -12,7 +12,7 @@ Tiers:
 
 Usage:
     # Automatic — just set the env var and limits are enforced
-    export SYNRIX_LICENSE_KEY="synrix-license-..."
+    export OCTOPODA_LICENSE_KEY="synrix-license-..."
 
     # Or save to file
     echo "synrix-license-..." > ~/.synrix/license.key
@@ -62,8 +62,8 @@ class AgentLimitError(LicenseError):
         self.tier = tier
         super().__init__(
             f"Agent limit reached: {current_count}/{max_agents} agents "
-            f"on {tier} tier. Upgrade your license at https://synrix.io/pricing "
-            f"and set SYNRIX_LICENSE_KEY in your environment."
+            f"on {tier} tier. Upgrade your license at https://octopodas.com/pricing "
+            f"and set OCTOPODA_LICENSE_KEY in your environment."
         )
 
 
@@ -78,8 +78,8 @@ class MemoryLimitError(LicenseError):
         super().__init__(
             f"Memory limit reached for agent '{agent_id}': "
             f"{current_count}/{max_memories} memories on {tier} tier. "
-            f"Upgrade your license at https://synrix.io/pricing "
-            f"and set SYNRIX_LICENSE_KEY in your environment."
+            f"Upgrade your license at https://octopodas.com/pricing "
+            f"and set OCTOPODA_LICENSE_KEY in your environment."
         )
 
 
@@ -212,19 +212,21 @@ def _generate_license_key(tier: str, email: str, expires_days: int = 0) -> str:
 def load_license_key() -> Optional[str]:
     """
     Load license key from environment or config file.
-    Priority: SYNRIX_LICENSE_KEY env var > ~/.synrix/license.key file
+    Priority: OCTOPODA_LICENSE_KEY env var > ~/.octopoda/license.key
+              (fallback to legacy ~/.synrix/license.key for older installs)
     """
-    key = os.environ.get("SYNRIX_LICENSE_KEY", "").strip()
+    key = os.environ.get("OCTOPODA_LICENSE_KEY", "").strip()
     if key:
         return key
 
-    license_file = os.path.expanduser("~/.synrix/license.key")
-    if os.path.exists(license_file):
-        try:
-            with open(license_file, "r") as f:
-                return f.read().strip()
-        except Exception:
-            pass
+    for candidate in ("~/.octopoda/license.key", "~/.synrix/license.key"):
+        license_file = os.path.expanduser(candidate)
+        if os.path.exists(license_file):
+            try:
+                with open(license_file, "r") as f:
+                    return f.read().strip()
+            except Exception:
+                pass
 
     return None
 
