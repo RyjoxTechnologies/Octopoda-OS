@@ -221,10 +221,22 @@ def handle_webhook_event(payload: bytes, signature: str) -> dict:
 
     if event_type == "checkout.session.completed":
         return _handle_checkout_completed(data)
+    elif event_type == "customer.subscription.created":
+        # Fires alongside checkout.session.completed on first upgrade, AND
+        # when a subscription is created manually via the Stripe dashboard
+        # (admin comp) without going through checkout. Idempotent with the
+        # checkout handler for the standard flow.
+        return _handle_subscription_created(data)
     elif event_type == "customer.subscription.updated":
         return _handle_subscription_updated(data)
     elif event_type == "customer.subscription.deleted":
         return _handle_subscription_deleted(data)
+    elif event_type == "invoice.payment_succeeded":
+        # Fires on every renewal + on recovery from past_due. We don't need
+        # to touch anything on a routine renewal (the sub is already active),
+        # but we DO need to re-upgrade tenants who were in a past_due/grace
+        # state and just paid successfully.
+        return _handle_payment_succeeded(data)
     elif event_type == "invoice.payment_failed":
         return _handle_payment_failed(data)
     else:
@@ -498,6 +510,130 @@ def _handle_subscription_deleted(subscription: dict) -> dict:
         logger.error("Post-cancel email flow failed for %s: %s", tenant_id, e)
 
     return {"action": "downgraded", "tenant_id": tenant_id, "plan": "free"}
+
+
+def _handle_subscription_created(subscription: dict) -> dict:
+    """Handle a new subscription being created.
+
+    Fires alongside `checkout.session.completed` on a normal upgrade (the two
+    are idempotent — `_upgrade_tenant` UPDATE is a no-op on the second call).
+    ALSO fires when a subscription is created directly in the Stripe dashboard
+    (admin comping someone manually) where `checkout.session.completed` never
+    runs. That second case is the reason this handler exists separately.
+
+    Requires `metadata.tenant_id` on the subscription. When you comp someone
+    via the Stripe dashboard, you MUST set Metadata: `tenant_id=<the id>` and
+    `plan=<pro|business|scale>` on the subscription for this to work.
+    """
+    tenant_id = subscription.get("metadata", {}).get("tenant_id", "")
+    if not tenant_id:
+        logger.info("subscription.created without tenant_id in metadata — "
+                    "skipping (likely handled by checkout.session.completed path "
+                    "or a manual admin sub with no metadata)")
+        return {"handled": False, "reason": "no tenant_id in metadata"}
+
+    price_id = (subscription.get("items", {}).get("data", [{}])[0]
+                .get("price", {}).get("id", ""))
+    plan = subscription.get("metadata", {}).get("plan") or _price_to_plan(price_id)
+    customer_id = subscription.get("customer", "")
+    subscription_id = subscription.get("id", "")
+
+    _upgrade_tenant(tenant_id, plan, customer_id, subscription_id)
+    logger.info("subscription.created — tenant %s set to %s", tenant_id, plan)
+
+    # Only fire the welcome email + owner notification if this is the
+    # primary path (no prior checkout). The checkout.session.completed
+    # handler already fires those. We detect prior handling by checking
+    # whether the tenant already has this subscription_id.
+    try:
+        t = _lookup_tenant(tenant_id=tenant_id)
+        # If t already has plan=<plan> before this call, assume checkout path
+        # already handled emails. Only fire for "dashboard admin comp" path
+        # where this is genuinely the first event.
+        if t and t.get("email") and subscription.get("metadata", {}).get("source") == "manual_comp":
+            _send_customer_welcome(t["email"], t.get("first_name", ""), plan)
+            _notify_owner("upgraded", t["email"], plan, tenant_id,
+                          extra="manually created in Stripe dashboard")
+    except Exception as e:
+        logger.error("Post-subscription-created email flow failed: %s", e)
+
+    return {"action": "subscription_created", "tenant_id": tenant_id, "plan": plan}
+
+
+def _handle_payment_succeeded(invoice: dict) -> dict:
+    """Handle a successful invoice payment.
+
+    Fires on:
+      - Initial payment at checkout (alongside checkout.session.completed)
+      - Every monthly renewal
+      - Recovery from past_due (revive a customer whose card failed earlier)
+
+    We don't need to do anything for routine renewals — the subscription is
+    already active, Stripe continues billing, DB state is unchanged. BUT if
+    the tenant was downgraded to `free` during a past_due grace period, this
+    event is our signal to re-upgrade them.
+    """
+    customer_id = invoice.get("customer", "")
+    billing_reason = invoice.get("billing_reason", "")
+    amount_paid = invoice.get("amount_paid", 0) / 100.0
+    currency = (invoice.get("currency") or "usd").upper()
+
+    logger.info("payment_succeeded | customer=%s billing_reason=%s amount=%s %s",
+                customer_id, billing_reason, amount_paid, currency)
+
+    # Ignore the initial payment — checkout.session.completed already handled it.
+    if billing_reason == "subscription_create":
+        return {"action": "noop_initial_payment", "customer_id": customer_id}
+
+    # For renewals or recoveries: look up the tenant, see if their plan looks
+    # right, fix it if they were downgraded during a past_due grace period.
+    try:
+        t = _lookup_tenant(customer_id=customer_id)
+        if not t:
+            return {"handled": False, "reason": "tenant not found by customer_id"}
+
+        tenant_id = t["tenant_id"]
+        current_plan = t.get("plan", "free")
+
+        # Re-read the subscription status from Stripe to find the true plan.
+        subscription_id = invoice.get("subscription", "")
+        if not subscription_id:
+            return {"action": "noop_no_subscription_on_invoice",
+                    "customer_id": customer_id}
+
+        import requests as _req
+        r = _req.get(
+            f"https://api.stripe.com/v1/subscriptions/{subscription_id}",
+            auth=(STRIPE_SECRET_KEY, ""), timeout=10,
+        )
+        if r.status_code != 200:
+            logger.warning("Stripe subscription read failed: %s %s", r.status_code, r.text[:200])
+            return {"handled": False, "reason": "stripe read failed"}
+
+        sub = r.json()
+        status = sub.get("status", "")
+        price_id = sub.get("items", {}).get("data", [{}])[0].get("price", {}).get("id", "")
+        true_plan = sub.get("metadata", {}).get("plan") or _price_to_plan(price_id)
+
+        # If tenant's plan in our DB doesn't match the subscription's plan,
+        # they were probably downgraded during past_due. Re-upgrade them.
+        if status == "active" and current_plan != true_plan:
+            _upgrade_tenant(tenant_id, true_plan, customer_id, subscription_id)
+            logger.info("Tenant %s re-upgraded from %s to %s after successful renewal",
+                        tenant_id, current_plan, true_plan)
+            try:
+                _notify_owner("upgraded", t["email"], true_plan, tenant_id,
+                              extra=f"recovered from past_due — {currency} {amount_paid:.2f}")
+            except Exception:
+                pass
+            return {"action": "recovered_from_past_due",
+                    "tenant_id": tenant_id, "plan": true_plan}
+
+        return {"action": "renewal_ok", "tenant_id": tenant_id, "plan": current_plan}
+    except Exception as e:
+        logger.error("payment_succeeded handler error for customer %s: %s",
+                     customer_id, e)
+        return {"handled": False, "error": str(e)[:200]}
 
 
 def _handle_payment_failed(invoice: dict) -> dict:
