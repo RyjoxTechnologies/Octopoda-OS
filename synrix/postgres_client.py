@@ -116,9 +116,14 @@ def _get_pool(dsn: str = None):
         if not dsn:
             raise ValueError("DATABASE_URL not set and no dsn provided")
         _register_null_byte_adapter()  # Global defense vs NUL bytes
+        # Pool size tuned for 2 uvicorn workers. minconn keeps warm connections
+        # per process; maxconn is the hard ceiling per process. Previous cap
+        # was 12 which a real user on openclaw-main hit in prod 2026-04-20
+        # (fact_embeddings bursts of 9+ writes racing with other ops).
+        # Env overrides available for scaling without redeploy.
         _pool = pg_pool.ThreadedConnectionPool(
-            minconn=1,
-            maxconn=12,
+            minconn=int(os.environ.get("OCTOPODA_PG_POOL_MIN", "2")),
+            maxconn=int(os.environ.get("OCTOPODA_PG_POOL_MAX", "32")),
             dsn=dsn,
         )
         return _pool
