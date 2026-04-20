@@ -22,7 +22,7 @@ _executor = ThreadPoolExecutor(max_workers=16)
 from fastapi import FastAPI, Depends, HTTPException, Header, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Dict, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -1244,14 +1244,26 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
     except Exception:
         pass
 
-    # License enforcement: check memory limit
-    try:
-        from synrix.licensing import check_memory_limit, record_memory_written, MemoryLimitError
-        check_memory_limit(agent_id)
-    except MemoryLimitError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except Exception:
-        pass
+    # Tenant-scoped memory cap enforcement.
+    #
+    # Previously this called synrix.licensing.check_memory_limit(agent_id) —
+    # that module was written for offline self-hosted users with HMAC-signed
+    # license keys, not cloud tenants. It tracked counts in a local SQLite
+    # ledger using agent_id alone (not tenant-scoped) with stale tier numbers
+    # (free=3 agents / 10K per agent) that didn't match the cloud plans
+    # (free=5 agents / 5K total). On the cloud, tier is determined by the
+    # tenants.plan row — check that directly, and let admins bypass.
+    if tenant_id not in _ADMIN_TENANTS:
+        try:
+            _enforce_tenant_memory_cap(tenant_id)
+        except HTTPException:
+            raise
+        except Exception as e:
+            # Fail open on DB glitch — better to accept a write than reject
+            # a legitimate one during a transient outage. The error is logged.
+            logger.warning("tenant memory cap check failed (failing open) | tenant=%s: %s",
+                           tenant_id, e)
+            _capture_silent(e, op="memory_cap_check", tenant_id=tenant_id)
 
     runtime = _get_runtime(agent_id, auth)
     loop = asyncio.get_event_loop()
@@ -1274,15 +1286,9 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
                 "Add your own API key at octopodas.com/dashboard/settings to restore full features."
             )
 
-    # Track the write
-    try:
-        from synrix.licensing import record_memory_written
-        record_memory_written(agent_id)
-    except Exception as e:
-        logger.warning("licensing.record_memory_written failed | tenant=%s agent=%s: %s",
-                       tenant_id, agent_id, e)
-        _capture_silent(e, op="record_memory_written",
-                        tenant_id=tenant_id, agent_id=agent_id)
+    # (the previous `record_memory_written` call wrote to a server-local
+    # SQLite ledger inherited from the offline-license era — it wasn't read
+    # by anything on the cloud and was just accumulating rows. Removed.)
 
     # Track latency & errors for anomaly detection
     _track_latency_and_errors(agent_id, result.latency_us, result.success, runtime)
@@ -3251,6 +3257,80 @@ def _read_platform_usage(tenant_id: str) -> int:
 def _increment_platform_usage(tenant_id: str):
     """Backward-compatible wrapper."""
     _check_and_increment_platform_usage(tenant_id)
+
+
+# ---------------------------------------------------------------------------
+# Tenant memory cap enforcement (cloud-side, per-tenant, DB-backed)
+# ---------------------------------------------------------------------------
+
+# Short cache so we don't hit Postgres on every single write. 30 seconds means
+# a tenant could briefly exceed their cap by a handful of writes across
+# workers, which is acceptable (we re-check on cache miss + every 30s).
+_memory_cap_cache: Dict[str, Tuple[float, int, int]] = {}  # tenant_id -> (ts, current, limit)
+_MEMORY_CAP_TTL = 30.0
+
+
+def _enforce_tenant_memory_cap(tenant_id: str):
+    """Raise HTTPException(402) if the tenant has hit their memory quota.
+
+    Runs per-tenant (not per-agent) so multi-agent tenants share one cap, which
+    matches the pricing page. Counts only user-visible memory nodes
+    (the `agents:{agent_id}:*` keyspace), not metadata/snapshot/fact-embedding
+    side-effect rows. A 30-second cache prevents the DB count from being run
+    on every single remember() call.
+    """
+    now = time.time()
+    cached = _memory_cap_cache.get(tenant_id)
+    if cached and (now - cached[0]) < _MEMORY_CAP_TTL:
+        current, limit = cached[1], cached[2]
+        if limit > 0 and current >= limit:
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Memory cap reached: {current:,} / {limit:,} on your current plan. "
+                    f"Upgrade at https://octopodas.com/pricing to continue writing."
+                ),
+            )
+        return
+
+    # Cache miss or stale — query the DB
+    from synrix_runtime.api.tenant import TenantManager
+    tm = TenantManager.get_instance()
+    conn = tm._conn()
+    try:
+        cur = conn.cursor()
+        # Ensure tenant_id is set for RLS so the count is naturally tenant-scoped
+        cur.execute("SET LOCAL app.tenant_id = %s", (tenant_id,))
+        # Count only user-visible memory rows (keys under agents:*).
+        # Excludes runtime state, snapshots, audit entries.
+        cur.execute("""
+            SELECT COUNT(*) FROM nodes
+             WHERE tenant_id = %s
+               AND name LIKE 'agents:%%'
+               AND name NOT LIKE 'agents:%%:snapshots:%%'
+               AND name NOT LIKE 'agents:%%:audit:%%'
+               AND name NOT LIKE 'agents:%%:state'
+               AND name NOT LIKE 'agents:%%:heartbeat'
+               AND valid_until = 0
+        """, (tenant_id,))
+        current = int(cur.fetchone()[0])
+        # Look up the tenant's configured limit
+        cur.execute("SELECT max_memories FROM tenants WHERE tenant_id = %s", (tenant_id,))
+        row = cur.fetchone()
+        limit = int(row[0]) if row and row[0] is not None else 5000
+    finally:
+        tm._release(conn)
+
+    _memory_cap_cache[tenant_id] = (now, current, limit)
+
+    if limit > 0 and current >= limit:
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                f"Memory cap reached: {current:,} / {limit:,} on your current plan. "
+                f"Upgrade at https://octopodas.com/pricing to continue writing."
+            ),
+        )
 
 
 def _save_tenant_settings(tenant_id: str, settings: dict):
