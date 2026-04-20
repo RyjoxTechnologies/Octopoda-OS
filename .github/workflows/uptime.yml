@@ -1,0 +1,45 @@
+name: Uptime monitoring
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check-api:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check api.octopodas.com/health
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://api.octopodas.com/health || echo "000")
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::API health check returned $STATUS"
+            exit 1
+          fi
+          echo "OK: api returned $STATUS"
+      - name: Alert on API failure
+        if: failure()
+        run: |
+          curl -s -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer ${{ secrets.RESEND_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{"from":"Octopoda Alerts <noreply@octopodas.com>","to":["joe@octopodas.com"],"subject":"EXTERNAL CHECK FAILED: api.octopodas.com unreachable","html":"<h2 style=color:#b44500>External uptime check failed</h2><p>GitHub Actions runner got non-200 from https://api.octopodas.com/health. Could be VPS down, network, DNS, SSL, or app crash not recovered.</p><p><a href=https://github.com/RyjoxTechnologies/octopoda/actions>View run</a></p>"}'
+
+  check-site:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check octopodas.com
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://octopodas.com || echo "000")
+          if [ "$STATUS" != "200" ] && [ "$STATUS" != "301" ] && [ "$STATUS" != "302" ]; then
+            echo "::error::Site returned $STATUS"
+            exit 1
+          fi
+          echo "OK: site returned $STATUS"
+      - name: Alert on site failure
+        if: failure()
+        run: |
+          curl -s -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer ${{ secrets.RESEND_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{"from":"Octopoda Alerts <noreply@octopodas.com>","to":["joe@octopodas.com"],"subject":"EXTERNAL CHECK FAILED: octopodas.com unreachable","html":"<p>GitHub Actions cannot reach https://octopodas.com</p>"}'
