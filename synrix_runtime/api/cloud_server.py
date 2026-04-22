@@ -1318,17 +1318,11 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
     brain_warnings = []
     try:
         from synrix_runtime.monitoring.brain import BrainHub
-        # Compute embedding for Brain analysis (lightweight — model is already loaded)
+        # Bug 1 fix: embedding already computed inside runtime.remember().
+        # Do NOT recompute — that was adding 100-500ms+ per write. BrainHub
+        # will either reuse a cached embedding or skip embedding-dependent
+        # checks gracefully when embedding=None.
         embedding = None
-        try:
-            from synrix.embeddings import EmbeddingModel
-            emb_model = EmbeddingModel.get()
-            if emb_model:
-                text = str(req.value) if not isinstance(req.value, str) else req.value
-                if len(text) > 5:  # Skip tiny values
-                    embedding = emb_model.encode(text)
-        except Exception:
-            pass
         backend = _get_tenant_backend(auth)
         brain_events = BrainHub.process_write(
             tenant_id, agent_id, req.key, req.value,

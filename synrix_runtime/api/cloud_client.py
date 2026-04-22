@@ -173,17 +173,17 @@ class SynrixCloudClient:
     # ------------------------------------------------------------------
 
     def _get(self, path: str, params: dict = None) -> dict:
-        resp = self.session.get(f"{self.base_url}{path}", params=params, timeout=30)
+        resp = self.session.get(f"{self.base_url}{path}", params=params, timeout=(3, 30))
         resp.raise_for_status()
         return resp.json()
 
     def _post(self, path: str, data: dict) -> dict:
-        resp = self.session.post(f"{self.base_url}{path}", json=data, timeout=30)
+        resp = self.session.post(f"{self.base_url}{path}", json=data, timeout=(3, 30))
         resp.raise_for_status()
         return resp.json()
 
     def _delete(self, path: str) -> dict:
-        resp = self.session.delete(f"{self.base_url}{path}", timeout=30)
+        resp = self.session.delete(f"{self.base_url}{path}", timeout=(3, 30))
         resp.raise_for_status()
         return resp.json()
 

@@ -1956,6 +1956,18 @@ class AgentRuntime:
         expires automatically, forget() is an intentional removal.
         Returns the deleted key and whether it was found.
         """
+        # Cloud mode: route through the REST API (Bug 3 fix)
+        if self._cloud_agent is not None:
+            try:
+                result = self._cloud_agent.forget(key)
+                # Server returns {deleted: bool, key, ...} — normalize to SDK shape
+                if isinstance(result, dict) and 'deleted' in result:
+                    return result
+                return {'key': key, 'deleted': True, 'reason': 'cloud_forget'}
+            except Exception as e:
+                logger.error('Cloud forget failed for key %s: %s', key, e)
+                return {'key': key, 'deleted': False, 'reason': f'cloud_error: {e}'}
+
         full_key = f"agents:{self.agent_id}:{key}"
         try:
             existing = self.backend.read(full_key)
@@ -2244,6 +2256,14 @@ class AgentRuntime:
 
         Returns a score from 0-100 with actionable recommendations.
         """
+        # Cloud mode: route through the REST API (Bug 4 fix)
+        if self._cloud_agent is not None:
+            try:
+                return self._cloud_agent.memory_health()
+            except Exception as e:
+                logger.error('Cloud memory_health failed: %s', e)
+                return {'score': 0, 'total_memories': 0, 'error': f'cloud_error: {e}'}
+
         prefix = f"agents:{self.agent_id}:"
         all_items = self.backend.query_prefix(prefix, limit=10000)
         now = time.time()
