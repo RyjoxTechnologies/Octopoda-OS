@@ -264,16 +264,35 @@ class OctopodaChatHistory(BaseChatMessageHistory):
     def __init__(self, agent_id: str = "langchain_agent", session_id: str = "default"):
         self.agent_id = agent_id
         self.session_id = session_id
-        self._agent = _get_agent(agent_id)
+        # v3.1.4: if cloud fails (no key / offline), fall back to local AgentRuntime.
+        # Previously raised AuthError and broke every local LangChain user.
+        self._local_rt = None
+        try:
+            self._agent = _get_agent(agent_id)
+        except Exception as cloud_err:
+            try:
+                from synrix_runtime.api.runtime import AgentRuntime as _AR
+                self._local_rt = _AR(agent_id)
+                self._agent = None
+            except Exception as local_err:
+                raise RuntimeError(
+                    f"OctopodaChatHistory failed both cloud (err: {cloud_err}) "
+                    f"and local (err: {local_err}). Set OCTOPODA_API_KEY or install synrix_runtime."
+                )
 
     @property
     def messages(self) -> List[BaseMessage]:
-        """Retrieve all messages from Octopoda Cloud."""
+        """Retrieve all messages from Octopoda Cloud (or local fallback)."""
         if not CHAT_HISTORY_AVAILABLE:
             return []
 
         key = f"chat_history:{self.session_id}"
-        data = self._agent.read(key)
+        # v3.1.4: local fallback path
+        if self._local_rt is not None:
+            r = self._local_rt.recall(key)
+            data = r.value if r.found else None
+        else:
+            data = self._agent.read(key)
 
         if data is None:
             return []
@@ -303,7 +322,11 @@ class OctopodaChatHistory(BaseChatMessageHistory):
     def add_message(self, message: BaseMessage) -> None:
         """Add a message to the history."""
         key = f"chat_history:{self.session_id}"
-        data = self._agent.read(key)
+        if self._local_rt is not None:
+            r = self._local_rt.recall(key)
+            data = r.value if r.found else None
+        else:
+            data = self._agent.read(key)
 
         history = []
         if data is not None:
@@ -327,7 +350,11 @@ class OctopodaChatHistory(BaseChatMessageHistory):
             "timestamp": time.time(),
         })
 
-        self._agent.write(key, json.dumps(history))
+        # v3.1.4: local fallback path
+        if self._local_rt is not None:
+            self._local_rt.remember(key, json.dumps(history))
+        else:
+            self._agent.write(key, json.dumps(history))
 
     def clear(self) -> None:
         """Clear all messages."""

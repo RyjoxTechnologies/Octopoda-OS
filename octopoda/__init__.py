@@ -10,7 +10,7 @@ Quick start:
     result = agent.recall("key")
 """
 
-__version__ = "3.1.3"
+__version__ = "3.1.4"
 
 # Cloud SDK (the main developer-facing API)
 from synrix.cloud import Octopoda, Agent, OctopodaError, AuthError, RateLimitError
@@ -132,3 +132,10 @@ __all__ = [
     "SynrixAgentBackend",
     "Memory",
 ]
+
+
+# v3.1.4: re-export modern LangChain integration (recommended over LangChainMemory)
+try:
+    from synrix.integrations.langchain import OctopodaChatHistory  # noqa: F401
+except Exception:
+    pass

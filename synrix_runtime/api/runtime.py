@@ -1699,6 +1699,26 @@ class AgentRuntime:
 
     def share(self, key: str, value: Any, space: str = "global") -> MemoryResult:
         """Write to shared memory space."""
+        # Cloud mode: route through REST API (Bug 4 fix v3.1.4)
+        # Previously wrote to local backend only, so cross-agent reads failed.
+        if self._cloud_agent is not None:
+            start = time.perf_counter_ns()
+            try:
+                result = self._cloud_agent.share(space, key, value)
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                return MemoryResult(
+                    node_id=result.get("node_id") if isinstance(result, dict) else None,
+                    key=key,
+                    latency_us=latency_us,
+                    timestamp=time.time(),
+                    success=True,
+                )
+            except Exception as e:
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                logger.error("Cloud share failed: %s", e)
+                return MemoryResult(node_id=None, key=key, latency_us=latency_us,
+                                    timestamp=time.time(), success=False)
+
         full_key = f"shared:{space}:{key}"
         payload = value if isinstance(value, dict) else {"value": value}
         payload["_author"] = self.agent_id
@@ -1724,6 +1744,34 @@ class AgentRuntime:
 
     def read_shared(self, key: str, space: str = "global") -> RecallResult:
         """Read from shared memory space."""
+        # Cloud mode: route through REST API (Bug 4 fix v3.1.4)
+        # Previously read from local backend only, so cross-agent reads returned None.
+        if self._cloud_agent is not None:
+            start = time.perf_counter_ns()
+            try:
+                client = self._cloud_agent._client if hasattr(self._cloud_agent, "_client") else None
+                if client is None:
+                    raise RuntimeError("cloud agent has no _client")
+                result = client.read_shared(space, key)
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                # Server response shape varies — normalize
+                if isinstance(result, dict):
+                    value = result.get("value")
+                    if value is None and "data" in result:
+                        value = result.get("data", {}).get("value", result.get("data"))
+                else:
+                    value = result
+                return RecallResult(
+                    value=value,
+                    key=key,
+                    latency_us=latency_us,
+                    found=value is not None,
+                )
+            except Exception as e:
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                logger.error("Cloud read_shared failed for key=%s space=%s: %s", key, space, e)
+                return RecallResult(value=None, key=key, latency_us=latency_us, found=False)
+
         full_key = f"shared:{space}:{key}"
 
         start = time.perf_counter_ns()
@@ -1855,21 +1903,39 @@ class AgentRuntime:
             pass
 
         # Capture memory snapshot at decision time (with timeout protection)
+        # v3.1.4 fix: add cloud branch — previously cloud-mode agents got empty {}
         memory_snapshot = {}
         try:
-            import concurrent.futures
-            def _capture_snapshot():
-                snap = {}
-                all_keys = self.backend.query_prefix(f"agents:{self.agent_id}:", limit=50)
-                for item in all_keys:
-                    key = item.get("key", "")
-                    if ":snapshots:" not in key:
-                        data = item.get("data", {})
-                        snap[key] = data.get("value", data)
-                return snap
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(_capture_snapshot)
-                memory_snapshot = future.result(timeout=10.0)
+            if self._cloud_agent is not None:
+                # Cloud: fetch memory list via REST API
+                try:
+                    client = self._cloud_agent._client if hasattr(self._cloud_agent, "_client") else None
+                    if client is not None:
+                        resp = client._get(f"/v1/agents/{self.agent_id}/memory", params={"limit": 50, "offset": 0})
+                        items = resp.get("items", []) if isinstance(resp, dict) else []
+                        for item in items:
+                            key = item.get("key", "")
+                            if ":snapshots:" not in key and not key.startswith("audit:"):
+                                val = item.get("value")
+                                if isinstance(val, dict) and "value" in val:
+                                    val = val["value"]
+                                memory_snapshot[key] = val
+                except Exception as e:
+                    logger.debug("Cloud snapshot capture failed: %s", e)
+            else:
+                import concurrent.futures
+                def _capture_snapshot():
+                    snap = {}
+                    all_keys = self.backend.query_prefix(f"agents:{self.agent_id}:", limit=50)
+                    for item in all_keys:
+                        key = item.get("key", "")
+                        if ":snapshots:" not in key:
+                            data = item.get("data", {})
+                            snap[key] = data.get("value", data)
+                    return snap
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(_capture_snapshot)
+                    memory_snapshot = future.result(timeout=10.0)
         except Exception:
             pass  # Log decision even without snapshot
 
