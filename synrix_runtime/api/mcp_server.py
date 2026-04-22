@@ -929,14 +929,19 @@ def octopoda_search_filtered(agent_id: str, query: str | None = None,
 # -----------------------------------------------------------------------
 
 def main():
-    """Run the MCP server (stdio transport)."""
+    """Run the MCP server (stdio transport).
+
+    Works in two modes:
+    - Cloud: set OCTOPODA_API_KEY to a real key (sk-octopoda-...)
+    - Local: leave OCTOPODA_API_KEY unset (or any non-real value) — uses local SQLite
+    """
+    import sys
     api_key = os.environ.get("OCTOPODA_API_KEY", "")
     if not api_key:
-        import sys
-        print("ERROR: OCTOPODA_API_KEY not set.", file=sys.stderr)
-        print("Get your free key at https://octopodas.com", file=sys.stderr)
-        print("Then: OCTOPODA_API_KEY=sk-octopoda-... octopoda-mcp", file=sys.stderr)
-        sys.exit(1)
+        print("Octopoda MCP starting in LOCAL mode (no OCTOPODA_API_KEY set).",
+              file=sys.stderr)
+        print("Using SQLite at ~/.synrix/data/synrix.db", file=sys.stderr)
+        print("For cloud sync, set OCTOPODA_API_KEY=sk-octopoda-...", file=sys.stderr)
     mcp.run(transport="stdio")
 
 

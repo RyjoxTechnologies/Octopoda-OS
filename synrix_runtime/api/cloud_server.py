@@ -448,6 +448,10 @@ _MAX_CACHED_RUNTIMES = 1000
 
 # Auto-checkpoint: tracks write count per agent, snapshots every 25 writes
 _auto_checkpoint_counter: dict = {}
+# Bounded pool for background checkpoint + brain work (v3.1.3 p99 fix)
+# Prevents thread explosion under high concurrency. Writes queue rather than spawn unbounded threads.
+from concurrent.futures import ThreadPoolExecutor as _TPE
+_bg_work_pool = _TPE(max_workers=8, thread_name_prefix='octo-bg')
 
 
 def _get_tenant_id(auth) -> str:
@@ -1298,7 +1302,6 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
         _auto_checkpoint_counter[f"{tenant_id}:{agent_id}"] = _auto_checkpoint_counter.get(f"{tenant_id}:{agent_id}", 0) + 1
         if _auto_checkpoint_counter[f"{tenant_id}:{agent_id}"] >= 25:
             _auto_checkpoint_counter[f"{tenant_id}:{agent_id}"] = 0
-            import threading
             def _bg_checkpoint():
                 try:
                     runtime.snapshot(label=f"auto-{int(time.time())}")
@@ -1307,37 +1310,31 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
                                    tenant_id, agent_id, bg_e)
                     _capture_silent(bg_e, op="auto_snapshot",
                                     tenant_id=tenant_id, agent_id=agent_id)
-            threading.Thread(target=_bg_checkpoint, daemon=True).start()
+            _bg_work_pool.submit(_bg_checkpoint)
     except Exception as e:
         logger.warning("auto-checkpoint scheduler failed | tenant=%s agent=%s: %s",
                        tenant_id, agent_id, e)
         _capture_silent(e, op="auto_checkpoint_schedule",
                         tenant_id=tenant_id, agent_id=agent_id)
 
-    # Brain Intelligence — process write through all 4 features
+    # Brain Intelligence — fire-and-forget on bounded pool (v3.1.3 p99 fix)
+    # Previously ran synchronously on request path, adding 100-500ms+ p99 spikes.
+    # Warnings are no longer returned in-band. Users can fetch via /v1/brain/events if needed.
     brain_warnings = []
-    try:
-        from synrix_runtime.monitoring.brain import BrainHub
-        # Bug 1 fix: embedding already computed inside runtime.remember().
-        # Do NOT recompute — that was adding 100-500ms+ per write. BrainHub
-        # will either reuse a cached embedding or skip embedding-dependent
-        # checks gracefully when embedding=None.
-        embedding = None
-        backend = _get_tenant_backend(auth)
-        brain_events = BrainHub.process_write(
-            tenant_id, agent_id, req.key, req.value,
-            embedding=embedding, backend=backend,
-        )
-        if brain_events:
-            brain_warnings = [{"type": e.event_type, "severity": e.severity,
-                              "message": e.message} for e in brain_events]
-    except Exception as e:
-        # Brain is non-blocking — never fail a write. But do log + report,
-        # so we know when the monitoring layer is broken.
-        logger.warning("BrainHub.process_write failed | tenant=%s agent=%s: %s",
-                       tenant_id, agent_id, e)
-        _capture_silent(e, op="brain_process_write",
-                        tenant_id=tenant_id, agent_id=agent_id)
+    def _bg_brain_process():
+        try:
+            from synrix_runtime.monitoring.brain import BrainHub
+            backend = _get_tenant_backend(auth)
+            BrainHub.process_write(
+                tenant_id, agent_id, req.key, req.value,
+                embedding=None, backend=backend,
+            )
+        except Exception as e:
+            logger.warning("BrainHub.process_write failed | tenant=%s agent=%s: %s",
+                           tenant_id, agent_id, e)
+            _capture_silent(e, op="brain_process_write",
+                            tenant_id=tenant_id, agent_id=agent_id)
+    _bg_work_pool.submit(_bg_brain_process)
 
     return MemoryResponse(
         node_id=result.node_id,
@@ -3249,8 +3246,23 @@ def _read_platform_usage(tenant_id: str) -> int:
         return 0
 
 def _increment_platform_usage(tenant_id: str):
-    """Backward-compatible wrapper."""
-    _check_and_increment_platform_usage(tenant_id)
+    """Increment platform extraction counter, raise 402 if over quota.
+
+    Users who have added their own LLM provider key bypass this entirely
+    (cached fast-path in _check_and_increment_platform_usage). Admin
+    tenants also bypass. Over-quota users get a clear 402 with a pointer
+    to add their own key in Settings.
+    """
+    allowed = _check_and_increment_platform_usage(tenant_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                f"Free platform AI extractions exhausted ({_PLATFORM_FREE_LIMIT}/{_PLATFORM_FREE_LIMIT}). "
+                f"Add your own OpenAI or Anthropic key in Settings to continue, "
+                f"or upgrade at https://octopodas.com/pricing."
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
