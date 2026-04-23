@@ -85,14 +85,14 @@ Useful for audit logs and run analytics.
 ```python
 restored = memory.restore_thread(thread.id)
 
-if restored and "state" in restored:
+if restored.get("found") and restored.get("state"):
     state = restored["state"]
     messages = state.get("messages", [])
 else:
     messages = []  # thread was never stored
 ```
 
-Always guard with the `if`. If the thread_id doesn't exist, `restore_thread` returns an empty dict — accessing `["state"]` directly will crash with KeyError.
+`restore_thread` always returns a dict with three keys: `state`, `latency_us`, and `found`. When the thread doesn't exist, `state` is `None` and `found` is `False`. Always check `found` (or `state` being truthy) before using it — accessing `restored["state"]["messages"]` directly on a missing thread crashes with `TypeError: 'NoneType' object is not subscriptable`.
 
 Octopoda injects two metadata fields into the state dict:
 
@@ -158,7 +158,7 @@ memory.store_run_result(run_id=run.id, result={"status": run.status})
 
 # Later, in a fresh process
 restored = memory.restore_thread(thread.id)
-if restored and "state" in restored:
+if restored.get("found") and restored.get("state"):
     prior = restored["state"].get("messages", [])
     print(f"Restored {len(prior)} messages")
 ```
@@ -182,10 +182,11 @@ The constructor takes no arguments.
 **Crashing on missing thread**
 
 ```python
-memory.restore_thread("nonexistent").state    # AttributeError
+memory.restore_thread("nonexistent")["state"]["messages"]
+# TypeError: 'NoneType' object is not subscriptable
 ```
 
-Returns an empty dict for missing threads. Guard with `if restored and "state" in restored`.
+`restore_thread` always returns a dict with `state`, `latency_us`, and `found` keys. For missing threads, `state` is `None` and `found` is `False`. Guard with `if restored.get("found") and restored.get("state")`.
 
 **Storing raw OpenAI message objects**
 
@@ -206,7 +207,7 @@ Convert to dicts first:
 
 **openai.AuthenticationError** — `OPENAI_API_KEY` not set. Export it.
 
-**restore_thread returns empty dict** — thread_id doesn't match between store and restore, or you never stored it. IDs are case-sensitive.
+**restore_thread returns `{"state": null, "found": false}`** — thread_id doesn't match between store and restore, or you never stored it. IDs are case-sensitive.
 
 **AuthError: api_key is required** — you're on octopoda < 3.1.4. Upgrade: `pip install --upgrade octopoda`. v3.1.4+ falls back to local SQLite with no key.
 
