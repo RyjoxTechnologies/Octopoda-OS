@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/ryjoxtechnologies-octopoda-os-badge.png)](https://mseep.ai/app/ryjoxtechnologies-octopoda-os)
+
 <h1 align="center">🐙 Octopoda</h1>
 
 <p align="center">
