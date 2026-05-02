@@ -600,7 +600,145 @@ class MemoryHealth:
 
 
 # ---------------------------------------------------------------------------
-# Brain Hub — Unified interface for all 4 features
+# 5. DARK RADAR — Detect memories invisible to search
+# ---------------------------------------------------------------------------
+
+class DarkRadar:
+    """
+    Detects memories that exist in the store but are invisible to search.
+
+    A memory is "dark" when it was written successfully but cannot be
+    retrieved by semantic search — a silent data loss worse than not
+    writing at all. The agent believes it remembered something; it cannot
+    find it.
+
+    Two detection levels:
+    - Embedding-level (always runs): None or zero-vector embedding means
+      the record will never match any semantic query.
+    - Search-level (optional, requires backend): after write, verify the
+      key surfaces in a search for its own content. Catches indexing
+      failures where the embedding exists but didn't land in the index.
+
+    Discovered in production: Willow memory audit found 27/28 atoms
+    (96%) dark in a Postgres knowledge store due to FTS tokenization gaps.
+    Embedding-based stores have their own failure mode — silent index
+    desync when the write path and the embedding path diverge.
+    """
+
+    ZERO_VEC_THRESHOLD = 1e-6  # Embedding norm below this = effectively zero
+    _dark_counts: Dict[str, int] = {}  # tenant:agent -> count of dark writes
+    _lock = threading.Lock()
+
+    @classmethod
+    def check(
+        cls,
+        tenant_id: str,
+        agent_id: str,
+        key: str,
+        value: Any,
+        embedding,
+        backend=None,
+    ) -> Optional[BrainEvent]:
+        """
+        Check if this memory will be findable by search after writing.
+
+        Args:
+            tenant_id: Tenant identifier.
+            agent_id:  Agent identifier.
+            key:       Memory key just written.
+            value:     Memory value just written.
+            embedding: Embedding returned by the write path (may be None).
+            backend:   Optional — if provided, performs a live search
+                       verification to catch index desync.
+
+        Returns:
+            BrainEvent with event_type="dark" if the memory is dark,
+            otherwise None.
+        """
+        dark_reason: Optional[str] = None
+
+        # Level 1: embedding is None — record has no vector, invisible to search
+        if embedding is None:
+            dark_reason = "embedding is None — memory has no vector representation"
+
+        # Level 2: zero-vector embedding — mathematically invisible (cos sim = 0 with everything)
+        if dark_reason is None:
+            try:
+                import numpy as np
+
+                if isinstance(embedding, bytes):
+                    vec = np.frombuffer(embedding, dtype=np.float32).copy()
+                else:
+                    vec = np.array(embedding, dtype=np.float32)
+
+                norm = float(np.linalg.norm(vec))
+                if norm < cls.ZERO_VEC_THRESHOLD:
+                    dark_reason = f"embedding is a zero-vector (norm={norm:.2e}) — will never match any query"
+            except Exception:
+                pass  # Non-fatal — skip this check if numpy is unavailable
+
+        # Level 3: search verification — write landed but not findable
+        if dark_reason is None and backend is not None and embedding is not None:
+            try:
+                results = backend.semantic_search(
+                    query_embedding=embedding,
+                    limit=5,
+                    threshold=0.90,
+                    name_prefix=f"agents:{agent_id}:",
+                )
+                found = any(
+                    r.get("key", r.get("name", "")).endswith(key)
+                    for r in (results or [])
+                )
+                if not found:
+                    dark_reason = (
+                        f"memory written but not returned by semantic search "
+                        f"(searched key='{key}', got {len(results or [])} results)"
+                    )
+            except Exception:
+                pass  # Non-fatal — backend errors don't block writes
+
+        if dark_reason is None:
+            return None
+
+        tracker_key = f"{tenant_id}:{agent_id}"
+        with cls._lock:
+            cls._dark_counts[tracker_key] = cls._dark_counts.get(tracker_key, 0) + 1
+            total_dark = cls._dark_counts[tracker_key]
+
+        return BrainEvent(
+            event_type="dark",
+            severity="warning",
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            message=f"Dark memory: '{key}' written but invisible to search",
+            details={
+                "key": key,
+                "reason": dark_reason,
+                "total_dark_this_session": total_dark,
+                "value_preview": str(value)[:100] if value is not None else None,
+            },
+            action_required=True,
+            action_type="reindex",
+        )
+
+    @classmethod
+    def get_dark_count(cls, tenant_id: str, agent_id: str) -> int:
+        """Return total dark writes recorded this session for the agent."""
+        key = f"{tenant_id}:{agent_id}"
+        with cls._lock:
+            return cls._dark_counts.get(key, 0)
+
+    @classmethod
+    def reset(cls, tenant_id: str, agent_id: str):
+        """Reset dark count for an agent (e.g. after a successful reindex)."""
+        key = f"{tenant_id}:{agent_id}"
+        with cls._lock:
+            cls._dark_counts.pop(key, None)
+
+
+# ---------------------------------------------------------------------------
+# Brain Hub — Unified interface for all 5 features
 # ---------------------------------------------------------------------------
 
 class BrainHub:
@@ -618,7 +756,7 @@ class BrainHub:
                       value: Any, embedding, backend=None,
                       has_extraction: bool = False) -> List[BrainEvent]:
         """
-        Process a memory write through all 4 Brain features.
+        Process a memory write through all 5 Brain features.
         Called from runtime.remember() after the write succeeds.
         Returns list of any triggered events.
         """
@@ -650,6 +788,12 @@ class BrainHub:
         if health_event:
             events.append(health_event)
             cls._store_event(tenant_id, health_event)
+
+        # 5. Dark Radar — detect writes invisible to search
+        dark_event = DarkRadar.check(tenant_id, agent_id, key, value, embedding, backend)
+        if dark_event:
+            events.append(dark_event)
+            cls._store_event(tenant_id, dark_event)
 
         return events
 
@@ -709,13 +853,17 @@ class BrainHub:
         health_warnings = len([e for e in events if e["event_type"] == "health"
                               and e["severity"] in ("warning", "critical")
                               and time.time() - e["timestamp"] < 3600])
+        dark_warnings = len([e for e in events if e["event_type"] == "dark"
+                            and time.time() - e["timestamp"] < 3600])
 
         return {
-            "status": "healthy" if not any([active_loops, active_drifts, active_conflicts, health_warnings]) else "attention_needed",
+            "status": "healthy" if not any([active_loops, active_drifts, active_conflicts,
+                                            health_warnings, dark_warnings]) else "attention_needed",
             "active_loops": active_loops,
             "active_drifts": active_drifts,
             "active_conflicts": active_conflicts,
             "health_warnings": health_warnings,
+            "dark_warnings": dark_warnings,
             "total_events": len(events),
             "recent_events": events[:10],
         }
