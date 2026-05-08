@@ -108,16 +108,30 @@ run("MCP server module imports with main() entrypoint", mcp_imports)
 def dashboard_boots():
     """Boot `octopoda` CLI, confirm it accepts HTTP, serves the dashboard SPA."""
     env = os.environ.copy()
+    # Fresh data dir for this subprocess so it does not collide with other smoke tests
+    env["SYNRIX_DATA_DIR"] = tempfile.mkdtemp(prefix="octopoda_dash_smoke_")
+    # CI runners have no display server, so always pass --no-browser to prevent
+    # synrix_runtime.start from blocking on webbrowser.open() on macOS/Linux.
     proc = subprocess.Popen(
-        [sys.executable, "-m", "synrix_runtime.start"],
+        [sys.executable, "-u", "-m", "synrix_runtime.start", "--no-browser"],
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,  # combined stream so we can dump it on failure
         env=env,
     )
     try:
-        deadline = time.time() + 30
+        # CI cold-start (esp. Windows + Python 3.9) needs longer than the
+        # original 30s budget. Bump to 90s; in practice this still resolves
+        # under 20s on a healthy run.
+        deadline = time.time() + 90
         last_err = None
         while time.time() < deadline:
+            if proc.poll() is not None:
+                # process exited early — surface its output and stop polling
+                output = proc.stdout.read().decode("utf-8", errors="replace") if proc.stdout else ""
+                raise RuntimeError(
+                    f"synrix_runtime.start exited prematurely with code {proc.returncode}.\n"
+                    f"--- subprocess output ---\n{output}\n--- end output ---"
+                )
             try:
                 with urllib.request.urlopen("http://127.0.0.1:7842/", timeout=2) as r:
                     assert r.status == 200, f"status={r.status}"
@@ -130,13 +144,25 @@ def dashboard_boots():
             except Exception as e:
                 last_err = e
                 time.sleep(1)
-        raise RuntimeError(f"dashboard didn't come up: {last_err}")
-    finally:
+        # Deadline hit without success — dump subprocess output so the failure is debuggable
         proc.terminate()
         try:
-            proc.wait(timeout=5)
+            output, _ = proc.communicate(timeout=5)
         except Exception:
             proc.kill()
+            output, _ = proc.communicate()
+        text = (output or b"").decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"dashboard didn't come up after 90s: {last_err}\n"
+            f"--- subprocess output ---\n{text}\n--- end output ---"
+        )
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
 
 
 run("Local dashboard boots and serves the SPA", dashboard_boots)
