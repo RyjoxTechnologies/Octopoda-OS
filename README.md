@@ -1,5 +1,11 @@
 [![MseeP.ai Security Assessment Badge](https://mseep.net/pr/ryjoxtechnologies-octopoda-os-badge.png)](https://mseep.ai/app/ryjoxtechnologies-octopoda-os)
 
+<p align="center">
+  <video src="https://github.com/RyjoxTechnologies/Octopoda-OS/raw/main/docs/images/octopoda-hero.mp4" autoplay loop muted playsinline width="800">
+    <img src="docs/images/octopoda-hero.jpg" alt="Octopoda" width="800" />
+  </video>
+</p>
+
 <h1 align="center">🐙 Octopoda</h1>
 
 <p align="center">
