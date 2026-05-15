@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.1.16 (2026-05-15)
+
+Closes Dvalin21 GitHub issue: `octopoda_get_context` returned 405 Method Not Allowed on cloud.
+
+Cause: MCP server's inline cloud adapter used `_get` with parameter `q`, but the cloud endpoint is declared `@app.post(/v1/agents/{id}/context)` with body field `query`. The `synrix.cloud.Agent.get_context()` SDK call was correct; only the MCP path was broken.
+
+Verified empirically against `api.octopodas.com`:
+- Before: `GET /context?q=test` returned `405 Method Not Allowed`
+- After: `POST /context {"query":"test"}` returns 200 with context payload
+
+One-line fix in `mcp_server.py`.
+
 ## 3.1.15 (2026-05-15)
 
 Response to Dvalin21 GitHub issue on `octopoda_recall_similar`. The routing fix in 3.1.8 and the advisory in 3.1.11 covered options (a) and (c) of his report; this release closes option (b): **FTS5 lexical fallback when semantic search returns empty**.

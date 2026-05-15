@@ -195,7 +195,14 @@ class _FastAgent:
         return self._c._post(f"{self._base}/process", {"messages": messages, **kwargs})
 
     def get_context(self, query, limit=10, format="text"):
-        return self._c._get(f"{self._base}/context", {"q": query, "limit": limit, "format": format})
+        # Cloud endpoint is declared @app.post(/v1/agents/{id}/context) with
+        # body field `query` (see cloud_server.py:2412). Previously used GET
+        # with `q` which returned 405 Method Not Allowed. Reported May 2026
+        # by Dvalin21.
+        return self._c._post(
+            f"{self._base}/context",
+            {"query": query, "limit": limit, "format": format},
+        )
 
 
 _LOCAL_SENTINELS = {"", "YOUR_KEY_HERE", "local", "offline", "dev", "none"}
