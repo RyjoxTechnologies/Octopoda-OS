@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.1.18 (2026-05-15)
+
+Closes Issue #7 (Yeraze): local deployment now actually works without `DATABASE_URL`.
+
+Before this release, running the cloud HTTP server locally (`octopoda` CLI with `OCTOPODA_API_KEY=local` and no Postgres) crashed on the first authenticated request with `ValueError: DATABASE_URL not set` from `TenantManager._get_pg_pool`. The server was hard-wired for the multi-tenant Postgres deployment.
+
+### Local mode in TenantManager
+
+When `DATABASE_URL` is unset (or `OCTOPODA_LOCAL_MODE=1` is set), TenantManager flips into single-tenant SQLite mode:
+
+- No Postgres pool. `_local_mode = True`.
+- Fixed `_local` tenant returned by `verify_api_key()` for any of the local sentinels (`local`, `offline`, `dev`, `none`, empty, or `YOUR_KEY_HERE`). Cloud-shaped keys (`sk-octopoda-...`) are rejected with a clear log line pointing to `DATABASE_URL`.
+- `get_backend(tenant_id)` returns a `SynrixAgentBackend(backend="sqlite")` rather than a Postgres RLS-scoped one.
+- `get_runtime` builds the AgentRuntime against the SQLite backend.
+- `get_tenant("_local")` returns the local tenant dict (caps disabled).
+- `list_tenants()` returns just `[_local]`.
+
+This means the cloud_server endpoints (`/v1/agents/{id}/remember`, `/recall`, `/cleanup`, etc.) all work against the local SQLite store with `Authorization: Bearer local` (or any local sentinel).
+
 ## 3.1.17 (2026-05-15)
 
 **Regression fix.** During the 3.1.10 "sync perf tree onto main" overlay, three files from main were not restored. They carried the v3.1.6 and v3.1.7 fixes for the SQLite bloat issue (Issue #6 on GitHub) and were silently overwritten by the older versions on the `dashboard-perf-100-agents` branch. Local users on 3.1.10 through 3.1.16 running with the SQLite backend could re-encounter the unbounded `nodes` table growth that caused the 184% CPU freeze in Dvalin21's original Issue #6.

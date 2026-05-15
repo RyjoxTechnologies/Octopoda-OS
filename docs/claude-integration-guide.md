@@ -120,23 +120,28 @@ Then if things go wrong:
 
 If it works, memory is persisting across sessions. If it doesn't, check that the MCP server shows as connected (type `/mcp` in Claude Code).
 
-## 13 Tools Available
+## Tools Available
 
-| Tool | What it does |
-|---|---|
-| octopoda_remember | Store a memory |
-| octopoda_recall | Get a memory by key |
-| octopoda_recall_similar | Find memories by meaning |
-| octopoda_search | Search by key prefix |
-| octopoda_recall_history | See how a memory changed over time |
-| octopoda_snapshot | Save a checkpoint |
-| octopoda_restore | Rollback to a checkpoint |
-| octopoda_share | Share data between agents/sessions |
-| octopoda_read_shared | Read shared data |
-| octopoda_list_agents | List all agents |
-| octopoda_agent_stats | Performance stats |
-| octopoda_log_decision | Log a decision with reasoning |
-| octopoda_loop_status | Check for loops |
+> **Heads up on naming (GitHub issue #5):** Claude Code prefixes every MCP tool with the server name. If you registered with `claude mcp add octopoda ...`, the tool exposed in Claude Code is `octopoda_octopoda_remember`, not `octopoda_remember`. The first column below is the underlying function name; the second is the name you actually call from a skill file or prompt.
+
+| Function name | Name in Claude Code | What it does |
+|---|---|---|
+| `octopoda_remember` | `octopoda_octopoda_remember` | Store a memory |
+| `octopoda_recall` | `octopoda_octopoda_recall` | Get a memory by key |
+| `octopoda_recall_similar` | `octopoda_octopoda_recall_similar` | Find memories by meaning |
+| `octopoda_search` | `octopoda_octopoda_search` | Search by key prefix |
+| `octopoda_recall_history` | `octopoda_octopoda_recall_history` | See how a memory changed over time |
+| `octopoda_snapshot` | `octopoda_octopoda_snapshot` | Save a checkpoint |
+| `octopoda_restore` | `octopoda_octopoda_restore` | Rollback to a checkpoint |
+| `octopoda_share` | `octopoda_octopoda_share` | Share data between agents/sessions |
+| `octopoda_read_shared` | `octopoda_octopoda_read_shared` | Read shared data |
+| `octopoda_list_agents` | `octopoda_octopoda_list_agents` | List all agents |
+| `octopoda_agent_stats` | `octopoda_octopoda_agent_stats` | Performance stats |
+| `octopoda_log_decision` | `octopoda_octopoda_log_decision` | Log a decision with reasoning |
+| `octopoda_loop_status` | `octopoda_octopoda_loop_status` | Check for loops |
+| `octopoda_status` | `octopoda_octopoda_status` | One-call diagnostic: mode, backend, dashboard URL, agent count |
+
+If you registered the server with a different name (e.g. `claude mcp add memory ...`) the prefix changes to match.
 
 ## Tips
 
