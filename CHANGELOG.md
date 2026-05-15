@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.1.17 (2026-05-15)
+
+**Regression fix.** During the 3.1.10 "sync perf tree onto main" overlay, three files from main were not restored. They carried the v3.1.6 and v3.1.7 fixes for the SQLite bloat issue (Issue #6 on GitHub) and were silently overwritten by the older versions on the `dashboard-perf-100-agents` branch. Local users on 3.1.10 through 3.1.16 running with the SQLite backend could re-encounter the unbounded `nodes` table growth that caused the 184% CPU freeze in Dvalin21's original Issue #6.
+
+Restored from `origin/main`:
+
+- **`synrix_runtime/core/gc.py`** — `GCConfig.runtime_agents_days` is back (default 1 day, configurable via `SYNRIX_GC_RUNTIME_AGENTS_DAYS`). `runtime:agents:*` prefix is back in the GC scope. Heartbeat history older than the retention window is pruned again.
+- **`synrix/sqlite_client.py`** — the two AFTER INSERT / AFTER DELETE triggers are back. `trg_nodes_prune_runtime_versions` caps `runtime:*` and `metrics:*` keys at 10 versions per key (configurable via `SYNRIX_MAX_VERSIONS_PER_RUNTIME_KEY`). `trg_nodes_fts_cleanup` cleans stale FTS5 entries when the prune trigger fires.
+- **`synrix_runtime/core/daemon.py`** — daemon thread intervals are env-configurable again: `SYNRIX_HEARTBEAT_INTERVAL_SEC`, `SYNRIX_ANOMALY_INTERVAL_SEC`, `SYNRIX_METRICS_INTERVAL_SEC`, `SYNRIX_RECOVERY_INTERVAL_SEC`.
+
+Cloud (Postgres) users were not affected by this regression because the SQLite-specific code paths never run on the cloud server. Local self-hosted users on 3.1.10-3.1.16 should upgrade to 3.1.17 if they noticed nodes table growth or CPU spin.
+
+Owning this: I missed these three files when doing the 3.1.10 sync. Caught by re-checking the audit-fix scoreboard, not by automated regression tests. Next step is to add a "previously-shipped audit fixes still present" check to the verifier so this can't recur silently.
+
 ## 3.1.16 (2026-05-15)
 
 Closes Dvalin21 GitHub issue: `octopoda_get_context` returned 405 Method Not Allowed on cloud.

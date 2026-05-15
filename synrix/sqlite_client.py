@@ -245,6 +245,45 @@ class SynrixSQLiteClient:
             # FTS5 not available in this SQLite build (rare)
             self._has_fts = False
 
+        # Schema-level version cap for high-volume internal keys (issue #6).
+        # Without this, runtime:agents:* and metrics:* keys accumulate one
+        # row per write forever (heartbeats write ~3 ops/sec/agent), eventually
+        # bloating the nodes table to multi-GB even with the GC running. The
+        # trigger fires on every INSERT, capping each runtime:* / metrics:*
+        # key to its most-recent N versions. User memories under agents:*
+        # are NOT capped here — those stay fully versioned for history
+        # queries via recall_history(). The cap is configurable via
+        # SYNRIX_MAX_VERSIONS_PER_RUNTIME_KEY (default 10).
+        # Reference: https://github.com/RyjoxTechnologies/Octopoda-OS/issues/6
+        max_versions = int(os.getenv("SYNRIX_MAX_VERSIONS_PER_RUNTIME_KEY", "10"))
+        try:
+            conn.executescript(f"""
+                DROP TRIGGER IF EXISTS trg_nodes_prune_runtime_versions;
+                CREATE TRIGGER trg_nodes_prune_runtime_versions
+                AFTER INSERT ON nodes
+                WHEN (NEW.name LIKE 'runtime:%' OR NEW.name LIKE 'metrics:%')
+                    AND NEW.version IS NOT NULL
+                BEGIN
+                    DELETE FROM nodes
+                    WHERE collection = NEW.collection
+                      AND name = NEW.name
+                      AND version IS NOT NULL
+                      AND version <= NEW.version - {max_versions};
+                END;
+
+                DROP TRIGGER IF EXISTS trg_nodes_fts_cleanup;
+                CREATE TRIGGER trg_nodes_fts_cleanup
+                AFTER DELETE ON nodes
+                BEGIN
+                    DELETE FROM nodes_fts WHERE rowid = OLD.id;
+                END;
+            """)
+            conn.commit()
+        except Exception:
+            # Trigger creation failure shouldn't block startup; the GC step
+            # added in 3.1.6 still cleans these prefixes on its 6h cycle.
+            pass
+
     def _sync_fts(self, conn, node_id: int, name: str, data: str, collection: str):
         """Insert or update the FTS index for a node."""
         if not getattr(self, '_has_fts', False):

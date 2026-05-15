@@ -1,17 +1,26 @@
 """
 Octopoda Agent Runtime — Garbage Collector
 ============================================
-Prunes old metrics, events, alerts, and audit entries to prevent SQLite bloat.
-Runs as a background thread in the daemon (every 6 hours by default).
+Prunes old metrics, events, heartbeats, alerts, and audit entries to prevent
+SQLite bloat. Runs as a background thread in the daemon (every 6 hours by
+default).
 
 Configuration via environment variables:
-    SYNRIX_GC_ENABLED=true          (default: true)
-    SYNRIX_GC_INTERVAL_HOURS=6      (default: 6)
-    SYNRIX_GC_METRICS_DAYS=7        (default: 7)
-    SYNRIX_GC_EVENTS_DAYS=14        (default: 14)
-    SYNRIX_GC_ALERTS_DAYS=14        (default: 14)
-    SYNRIX_GC_AUDIT_DAYS=90         (default: 90)
-    SYNRIX_GC_MAX_SNAPSHOTS=10      (default: 10 per agent)
+    SYNRIX_GC_ENABLED=true               (default: true)
+    SYNRIX_GC_INTERVAL_HOURS=6           (default: 6)
+    SYNRIX_GC_METRICS_DAYS=7             (default: 7)
+    SYNRIX_GC_EVENTS_DAYS=14             (default: 14)
+    SYNRIX_GC_ALERTS_DAYS=14             (default: 14)
+    SYNRIX_GC_AUDIT_DAYS=90              (default: 90)
+    SYNRIX_GC_RUNTIME_AGENTS_DAYS=1      (default: 1) — heartbeats / agent state
+    SYNRIX_GC_MAX_SNAPSHOTS=10           (default: 10 per agent)
+
+The `runtime_agents_days` retention applies to the `runtime:agents:*` prefix,
+which holds heartbeat writes (~3 writes/sec/agent) plus per-agent state. Old
+versions of these keys accumulate forever otherwise — issue #6 documented a
+case where this single prefix grew to 2.2M of 4.1M total rows. The daemon
+only ever reads the *most recent* heartbeat or state row per agent, so
+1-day retention is safe.
 """
 
 import time
@@ -30,6 +39,7 @@ class GCConfig:
     events_days: int = 14
     alerts_days: int = 14
     audit_days: int = 90
+    runtime_agents_days: int = 1
     max_snapshots_per_agent: int = 10
 
     @classmethod
@@ -42,6 +52,7 @@ class GCConfig:
             events_days=int(os.getenv("SYNRIX_GC_EVENTS_DAYS", "14")),
             alerts_days=int(os.getenv("SYNRIX_GC_ALERTS_DAYS", "14")),
             audit_days=int(os.getenv("SYNRIX_GC_AUDIT_DAYS", "90")),
+            runtime_agents_days=int(os.getenv("SYNRIX_GC_RUNTIME_AGENTS_DAYS", "1")),
             max_snapshots_per_agent=int(os.getenv("SYNRIX_GC_MAX_SNAPSHOTS", "10")),
         )
 
@@ -62,6 +73,7 @@ class GarbageCollector:
             "events_deleted": 0,
             "alerts_deleted": 0,
             "audit_deleted": 0,
+            "runtime_agents_deleted": 0,
             "snapshots_pruned": 0,
         }
 
@@ -87,11 +99,23 @@ class GarbageCollector:
             cutoff = now - (self.config.audit_days * 86400)
             stats["audit_deleted"] = self.backend.delete_prefix_before("audit:", cutoff)
 
-        # 5. Prune old snapshots (keep latest N per agent)
+        # 5. Prune runtime:agents:* (heartbeats + state) — fixes issue #6
+        # Heartbeats write ~3x/sec per agent; without GC this prefix becomes
+        # the dominant contributor to nodes-table growth (54% in one
+        # reported production case before this prune was added).
+        # The daemon only reads the most recent row per key, so 1-day
+        # retention is safe; older versions are pure history nothing reads.
+        if self.config.runtime_agents_days > 0:
+            cutoff = now - (self.config.runtime_agents_days * 86400)
+            stats["runtime_agents_deleted"] = self.backend.delete_prefix_before(
+                "runtime:agents:", cutoff
+            )
+
+        # 6. Prune old snapshots (keep latest N per agent)
         stats["snapshots_pruned"] = self._prune_snapshots()
 
-        # 6. VACUUM if we deleted a significant amount
-        total_deleted = sum(stats.values())
+        # 7. VACUUM if we deleted a significant amount
+        total_deleted = sum(v for k, v in stats.items() if isinstance(v, int))
         if total_deleted > 1000:
             self.backend.vacuum()
             stats["vacuumed"] = True
@@ -102,11 +126,12 @@ class GarbageCollector:
 
         if total_deleted > 0:
             logger.info(
-                "GC complete: %d entries pruned in %.1fms (metrics=%d events=%d alerts=%d audit=%d snapshots=%d)",
+                "GC complete: %d entries pruned in %.1fms "
+                "(metrics=%d events=%d alerts=%d audit=%d runtime_agents=%d snapshots=%d)",
                 total_deleted, elapsed_ms,
                 stats["metrics_deleted"], stats["events_deleted"],
                 stats["alerts_deleted"], stats["audit_deleted"],
-                stats["snapshots_pruned"],
+                stats["runtime_agents_deleted"], stats["snapshots_pruned"],
             )
 
         return stats
