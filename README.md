@@ -15,6 +15,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9+-blue?style=flat-square" alt="Python 3.9+" /></a>
   <a href="https://github.com/RyjoxTechnologies/Octopoda-OS/stargazers"><img src="https://img.shields.io/github/stars/RyjoxTechnologies/Octopoda-OS?style=flat-square&color=gold" alt="Stars" /></a>
+  <a href="https://oosmetrics.com/repo/RyjoxTechnologies/Octopoda-OS"><img src="https://api.oosmetrics.com/api/v1/badge/achievement/91ba942c-54bf-4c16-b359-f6a11d9d7aab.svg" alt="oosmetrics Top 3 in Observability" /></a>
 </p>
 
 <p align="center">
