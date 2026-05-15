@@ -624,6 +624,25 @@ class BrainHub:
         """
         events = []
 
+        # Audit fix (May 2026 §9.3): the cloud /remember handler runs this
+        # whole method on a background pool with embedding=None (p99 fix).
+        # That short-circuited DriftRadar.track() so _recent_embeddings
+        # never grew — drift state perma-reported `recent_samples: 0` and
+        # `alignment_percent: null`. Now lazy-compute the embedding here,
+        # which still keeps latency off the request path (we're already in
+        # _bg_work_pool by the time we land here from cloud_server).
+        if embedding is None:
+            try:
+                from synrix.embeddings import EmbeddingModel
+                model = EmbeddingModel.get()
+                if model is not None:
+                    text = value if isinstance(value, str) else str(value)
+                    # Cap to avoid embedding pathological 100KB blobs
+                    if text and len(text) <= 8192:
+                        embedding = model.encode(text)
+            except Exception as _emb_err:
+                logger.debug("brain lazy embedding skipped: %s", _emb_err)
+
         # 1. Loop Breaker
         loop_event = LoopBreaker.check(tenant_id, agent_id, embedding, key)
         if loop_event:

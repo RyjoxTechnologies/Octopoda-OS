@@ -1,5 +1,68 @@
 # Changelog
 
+## 3.1.12 (2026-05-15)
+
+Closes the three real bugs from the May 2026 third-party audit (Dvalin21): features that *existed* but didn't deliver what the response shape implied.
+
+### Bug 1 — `loop_warning` is null in audit rows during write-pattern loops (§12.3)
+
+When v1 severity flipped to red because of `write_similarity` / `key_overwrite` / `velocity_spike` / `alert_frequency`, decisions logged in that state still got `loop_warning: null` in the audit row. `_check_decision_loop` only caught duplicate *decisions*, never the surrounding write loop. Replay was therefore blind to the runaway state when the decision was made.
+
+Fix: `AgentRuntime.log_decision` now also pulls live `get_loop_status()` and writes a structured `loop_warning` that includes both branches:
+
+```python
+loop_warning = {
+  "decision_repeat": {...},        # existing behaviour
+  "live_status": {                  # NEW
+    "severity": "red",
+    "score": 0,
+    "loop_type": "retry_loop",
+    "signal_names": ["write_similarity", "key_overwrite", ...],
+    "signal_count": 4,
+  },
+}
+```
+
+### Bug 2 — `consolidate()` ignores same-key version churn (§12.5)
+
+Loop signal recommends `consolidate()` as remediation. Auditor's reproducer: 21 byte-identical writes to one key → `clusters_found: 0`. The cross-key pass uses `query_prefix` which returns *one* row per key (the latest version), so 21 identical historical versions are invisible to it. The recommended fix didn't fix the recommended-against situation.
+
+Fix: added a second pass that walks each key's version history (`backend.get_history`) and flags keys where ≥half the versions are byte-identical to the current value. New response fields:
+
+```json
+{
+  "consolidated": 0,
+  "clusters_found": 1,
+  "cross_key_clusters": 0,
+  "version_churn_clusters": 1,
+  "version_churn_details": [
+    {"key": "loop_probe", "total_versions": 21,
+     "identical_versions": 21, "pattern": "same_key_version_churn"}
+  ]
+}
+```
+
+Historical rows are **not** deleted automatically (bitemporal versioning is a feature; replay would break). The version-cap trigger (3.1.7) handles ephemeral `runtime:`/`metrics:` keys; user `agents:*` keys stay on purpose.
+
+### Bug 3 — drift sampler never samples (§9.3)
+
+`/v1/brain/drift/{agent_id}` returned `recent_samples: 0` and `alignment_percent: null` regardless of write activity. Root cause: the cloud `/remember` handler runs `BrainHub.process_write` on a background pool with `embedding=None` (3.1.3 p99 fix), and `DriftRadar.track()` short-circuits on `None`. The replacement embedding fetch was never wired up.
+
+Fix: `BrainHub.process_write` now lazy-computes the embedding from `value` when `embedding is None` (still in background pool, so no impact on request latency). All four brain subsystems — LoopBreaker, DriftRadar, ContradictionShield, MemoryHealth — see real embeddings again on cloud writes.
+
+Goal-alignment claim is now substantiated: write off-goal content, `recent_samples` climbs, `alignment_percent` reflects the cosine vs goal embedding.
+
+### Tests
+
+New file: `tests/test_audit_bugfixes_3_1_12.py` — 4 regression tests, one per bug + a sanity test that bug 1's fix doesn't fire when severity is green.
+
+### Audit items still open (3 architectural, target later)
+
+- v1 detector → v2 circuit breaker wiring (`/remember` server-side `/check` consult)
+- Agent stall detection (heartbeat timeout)
+- `OCTOPODA_DATA_DIR` for per-project DBs
+- `octopoda_status` self-test MCP tool
+
 ## 3.1.11 (2026-05-15)
 
 Patch release immediately after 3.1.10. Closes one critical import bug and three audit follow-ups.

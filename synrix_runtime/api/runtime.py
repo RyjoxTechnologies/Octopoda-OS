@@ -1902,6 +1902,32 @@ class AgentRuntime:
         except Exception:
             pass
 
+        # Audit fix (May 2026 §12.3): also pull the live v1 loop status so
+        # decisions logged DURING a write-pattern loop carry that context
+        # into the audit row. Before this, _check_decision_loop only caught
+        # duplicate *decisions*, so a unique decision made during a red
+        # severity write loop got loop_warning=null in audit — and replay
+        # would miss that the agent was looping when the decision happened.
+        live_loop_status = None
+        try:
+            status = self.get_loop_status()
+            severity = (status or {}).get("severity")
+            if severity in ("yellow", "orange", "red"):
+                signals = status.get("signals", []) or []
+                live_loop_status = {
+                    "severity": severity,
+                    "score": status.get("score"),
+                    "loop_type": status.get("loop_type"),
+                    "signal_names": [
+                        (s.get("name") or s.get("type") or "")
+                        for s in signals
+                        if isinstance(s, dict)
+                    ][:5],
+                    "signal_count": len(signals),
+                }
+        except Exception:
+            pass
+
         # Capture memory snapshot at decision time (with timeout protection)
         # v3.1.4 fix: add cloud branch — previously cloud-mode agents got empty {}
         memory_snapshot = {}
@@ -1939,6 +1965,16 @@ class AgentRuntime:
         except Exception:
             pass  # Log decision even without snapshot
 
+        # Combine decision-level loop check + live v1 status so the audit
+        # row reflects BOTH "this decision repeats" and "agent was looping
+        # at the time of this decision" — see audit §12.3 fix above.
+        combined_loop_warning = None
+        if decision_loop or live_loop_status:
+            combined_loop_warning = {
+                "decision_repeat": decision_loop,
+                "live_status": live_loop_status,
+            }
+
         decision_data = {
             "agent_id": self.agent_id,
             "decision": decision,
@@ -1946,7 +1982,7 @@ class AgentRuntime:
             "context": context or {},
             "memory_snapshot": memory_snapshot,
             "timestamp": time.time(),
-            "loop_warning": decision_loop,
+            "loop_warning": combined_loop_warning,
         }
 
         # Write audit record in background — never block the response.
@@ -2174,26 +2210,29 @@ class AgentRuntime:
                     "timestamp": data.get("timestamp", 0),
                 })
 
-        if len(memories) < 2:
-            return {"consolidated": 0, "total_memories": len(memories), "dry_run": dry_run}
-
-        # Embed all memories
+        # Cross-key clustering needs ≥2 memories AND embeddings. Version-churn
+        # detection (audit §12.5 fix below) works even with 1 memory, so we
+        # split the early-exit: skip cross-key work but still run the churn
+        # pass. Otherwise a single key with 21 byte-identical versions hits
+        # the old "return clusters_found=0" path — the exact regression the
+        # auditor flagged.
+        duplicates: list = []
         embeddings = []
-        for mem in memories:
-            emb = emb_model.encode(mem["text"])
-            if isinstance(emb, bytes):
-                vec = np.frombuffer(emb, dtype=np.float32)
-            else:
-                vec = np.array(emb, dtype=np.float32)
-            norm = np.linalg.norm(vec)
-            if norm > 0:
-                vec = vec / norm
-            embeddings.append(vec)
-            mem["embedding"] = vec
+        if len(memories) >= 2:
+            for mem in memories:
+                emb = emb_model.encode(mem["text"])
+                if isinstance(emb, bytes):
+                    vec = np.frombuffer(emb, dtype=np.float32)
+                else:
+                    vec = np.array(emb, dtype=np.float32)
+                norm = np.linalg.norm(vec)
+                if norm > 0:
+                    vec = vec / norm
+                embeddings.append(vec)
+                mem["embedding"] = vec
 
         # Find duplicate clusters
         merged_indices = set()
-        duplicates = []
 
         for i in range(len(memories)):
             if i in merged_indices:
@@ -2224,12 +2263,70 @@ class AgentRuntime:
                         except Exception:
                             pass
 
+        # Audit fix (May 2026 §12.5): also detect same-key version churn.
+        # Cross-key clustering above misses the case the loop signal
+        # explicitly recommends consolidate() for: 21 byte-identical writes
+        # to ONE key (caught by `key_overwrite` signal). query_prefix only
+        # returns the latest version, so cross-key dedup sees just 1 row
+        # per key and returns clusters_found=0 — which is why the auditor
+        # called the remediation "inert against the situation it recommends."
+        # This second pass walks each key's version history and flags
+        # version churn (≥3 versions where ≥half are identical to current).
+        version_churn = []
+        try:
+            VERSION_CHURN_MIN = 3  # at least 3 versions to even bother
+            for mem in memories:
+                key = mem["key"]
+                try:
+                    history = self.backend.get_history(key) or []
+                except Exception:
+                    history = []
+                if len(history) < VERSION_CHURN_MIN:
+                    continue
+                # Count how many historical versions have the same text as
+                # current. Use _value_to_text so dicts/objects normalise the
+                # same way as the outer scan.
+                current_text = mem["text"]
+                identical_count = 0
+                for h in history:
+                    h_val = h.get("data", {})
+                    if isinstance(h_val, dict):
+                        h_val = h_val.get("value", h_val)
+                    if self._value_to_text(h_val) == current_text:
+                        identical_count += 1
+                # Trip if half or more of the versions are byte-identical to
+                # current. Threshold deliberately permissive — the auditor's
+                # case was 21/21, but even 5/10 is wasteful churn worth flagging.
+                if identical_count >= max(VERSION_CHURN_MIN, len(history) // 2):
+                    short_key = key.replace(prefix, "")
+                    cluster_record = {
+                        "key": short_key,
+                        "total_versions": len(history),
+                        "identical_versions": identical_count,
+                        "pattern": "same_key_version_churn",
+                    }
+                    version_churn.append(cluster_record)
+                    if not dry_run:
+                        # We intentionally do NOT delete historical rows here:
+                        # bitemporal versioning is a feature, deleting history
+                        # would break replay. Instead, the runtime version
+                        # cap trigger (3.1.7) handles automatic pruning of
+                        # ephemeral runtime:/metrics: keys. User agents: keys
+                        # are kept on purpose. If the caller wants to reclaim
+                        # space, agent.forget_stale() is the right hammer.
+                        pass
+        except Exception as _churn_err:
+            logger.debug("version-churn pass failed (non-fatal): %s", _churn_err)
+
         return {
             "consolidated": sum(len(d["removed"]) for d in duplicates),
-            "clusters_found": len(duplicates),
+            "clusters_found": len(duplicates) + len(version_churn),
+            "cross_key_clusters": len(duplicates),
+            "version_churn_clusters": len(version_churn),
             "total_memories": len(memories),
             "dry_run": dry_run,
             "details": duplicates[:20],  # Cap detail output
+            "version_churn_details": version_churn[:20],
         }
 
     # -----------------------------------------------------------------

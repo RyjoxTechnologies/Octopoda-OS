@@ -261,7 +261,7 @@ def _capture_silent(exc: Exception, op: str = "", **context):
 
 app = FastAPI(
     title="Octopoda Agent Memory API",
-    version="3.1.11",
+    version="3.1.12",
     description="Persistent Memory Kernel for AI Agents. Sub-millisecond crash recovery, shared memory bus, full audit trail.",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -1366,7 +1366,7 @@ async def health():
         backend_type = getattr(_daemon.backend, 'backend_type', 'unknown')
     return HealthResponse(
         status="ok",
-        version="3.1.11",
+        version="3.1.12",
         backend=backend_type,
         uptime_seconds=time.time() - _boot_time,
     )
