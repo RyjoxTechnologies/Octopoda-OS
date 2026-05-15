@@ -13,11 +13,14 @@ Architecture:
 
 import os
 import time
+import logging
 import hashlib
 import secrets
 import threading
 import json
 from typing import Dict, Optional, List
+
+logger = logging.getLogger("octopoda.tenant")
 
 
 # ---------------------------------------------------------------------------
@@ -104,10 +107,47 @@ class TenantManager:
         """Reset singleton (for testing)."""
         cls._instance = None
 
+    # Sentinels that mean "I'm a local user, don't try to authenticate against cloud."
+    # Mirrors the MCP server's _LOCAL_SENTINELS. Closes audit issue #7 (Yeraze):
+    # cloud_server.py used to require DATABASE_URL even in local install, so
+    # OCTOPODA_API_KEY=local crashed with "DATABASE_URL not set" on the first
+    # /v1/auth/me call.
+    _LOCAL_SENTINELS = {"", "YOUR_KEY_HERE", "local", "offline", "dev", "none"}
+
     def __init__(self, data_dir: str = None, dsn: str = None):
         self._dsn = dsn or os.environ.get("DATABASE_URL", "")
-        self._data_dir = data_dir or os.path.expanduser("~/.synrix/data")
-        self._pool = _get_pg_pool(self._dsn)
+        self._data_dir = data_dir or os.path.expanduser(
+            os.environ.get("OCTOPODA_DATA_DIR")
+            or os.environ.get("SYNRIX_DATA_DIR")
+            or "~/.synrix/data"
+        )
+        # Local mode = no Postgres DSN configured. Single-tenant SQLite path.
+        # OCTOPODA_LOCAL_MODE=1 forces local even if DATABASE_URL is set
+        # (useful for self-hosted users who have a stray DSN in env).
+        force_local = (os.environ.get("OCTOPODA_LOCAL_MODE", "") or "").strip().lower() in (
+            "1", "true", "yes", "on"
+        )
+        self._local_mode = force_local or not bool(self._dsn)
+
+        if self._local_mode:
+            self._pool = None
+            self._local_tenant = {
+                "tenant_id": "_local",
+                "email": "local@octopoda.local",
+                "plan": "local",
+                "name": "Local Mode",
+                "created_at": time.time(),
+                "verified": True,
+                "api_key": "local",
+            }
+            logger.info(
+                "TenantManager started in LOCAL mode (no DATABASE_URL). "
+                "Single-tenant SQLite at %s. To use cloud, set DATABASE_URL.",
+                self._data_dir,
+            )
+        else:
+            self._pool = _get_pg_pool(self._dsn)
+            self._local_tenant = None
 
         # Cache: tenant_id -> backend instance
         self._backends: Dict[str, object] = {}
@@ -264,11 +304,34 @@ class TenantManager:
 
     def verify_api_key(self, raw_key: str) -> Optional[dict]:
         """Verify an API key. Returns {tenant_id, plan, max_agents, ...} or None."""
-        if not raw_key:
-            return None
+        if raw_key is None:
+            raw_key = ""
         if raw_key.startswith("Bearer "):
             raw_key = raw_key[7:]
+        raw_key = raw_key.strip()
 
+        # Local-mode auth: accept the sentinels (or empty) as the local tenant.
+        # In local mode there's no Postgres `api_keys` table to query against,
+        # so any sentinel just passes through as the fixed _local tenant.
+        # Audit fix §7 (Yeraze): pre-fix this would have hit the empty pool
+        # and raised "DATABASE_URL not set" on the first auth check.
+        if self._local_mode:
+            if raw_key.lower() in self._LOCAL_SENTINELS:
+                return dict(self._local_tenant, key_active=True,
+                            tenant_active=True, max_agents=None,
+                            max_memories_per_agent=None,
+                            first_name="Local", last_name="User")
+            # Cloud-shaped keys are still rejected in local mode — caller
+            # probably meant to point at a real cloud server.
+            if raw_key.startswith("sk-octopoda-"):
+                logger.info(
+                    "Cloud-shaped API key supplied to a local-mode server. "
+                    "Set DATABASE_URL to enable multi-tenant cloud auth."
+                )
+            return None
+
+        if not raw_key:
+            return None
         key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
         conn = self._conn()
         try:
@@ -341,6 +404,13 @@ class TenantManager:
 
     def get_tenant(self, tenant_id: str) -> Optional[dict]:
         """Get tenant info by ID."""
+        if self._local_mode:
+            if tenant_id == "_local":
+                return dict(self._local_tenant, max_agents=None,
+                            max_memories_per_agent=None, active=True,
+                            company=None, use_case=None,
+                            first_name="Local", last_name="User")
+            return None
         conn = self._conn()
         try:
             cur = conn.cursor()
@@ -362,6 +432,8 @@ class TenantManager:
 
     def list_tenants(self) -> List[dict]:
         """List all active tenants (admin only)."""
+        if self._local_mode:
+            return [dict(self._local_tenant)]
         conn = self._conn()
         try:
             cur = conn.cursor()
@@ -380,7 +452,8 @@ class TenantManager:
 
     def get_backend(self, tenant_id: str):
         """Get or create an isolated backend for a tenant.
-        Uses PostgreSQL with RLS — tenant_id is set on every connection.
+        Cloud mode: PostgreSQL with RLS (tenant_id set on every connection).
+        Local mode: shared SQLite backend (audit fix §7 — Yeraze).
         """
         with self._cache_lock:
             if tenant_id in self._backends:
@@ -388,11 +461,18 @@ class TenantManager:
 
         from synrix.agent_backend import SynrixAgentBackend
 
-        backend = SynrixAgentBackend(
-            backend="postgres",
-            dsn=self._dsn,
-            tenant_id=tenant_id,
-        )
+        if self._local_mode:
+            # Single-tenant SQLite. No RLS, no DSN. Caches per tenant_id
+            # (always "_local" in practice) so repeat lookups are O(1).
+            backend = SynrixAgentBackend(
+                backend="sqlite",
+            )
+        else:
+            backend = SynrixAgentBackend(
+                backend="postgres",
+                dsn=self._dsn,
+                tenant_id=tenant_id,
+            )
 
         with self._cache_lock:
             self._backends[tenant_id] = backend
@@ -412,9 +492,11 @@ class TenantManager:
                 return self._runtimes[cache_key]
 
         if register:
-            # Check agent limit only when registering new agents
+            # Check agent limit only when registering new agents. Local mode
+            # sets max_agents=None (uncapped). Skip the comparison entirely
+            # in that case to avoid TypeError on `int >= None`.
             tenant = self.get_tenant(tenant_id)
-            if tenant:
+            if tenant and tenant.get("max_agents") is not None:
                 agent_count = self.count_agents(tenant_id)
                 if agent_count >= tenant["max_agents"]:
                     raise TenantLimitError(
