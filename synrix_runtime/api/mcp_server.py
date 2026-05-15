@@ -284,28 +284,94 @@ class _LocalAgentAdapter:
     def search(self, query, limit=10):
         """Semantic search by meaning (route through recall_similar, NOT prefix search).
 
-        Before: rt.search() did keyword/prefix matching, never hit the embedding
-        index — so octopoda_recall_similar silently returned 0 results even when
-        embeddings were present (reported in the May 2026 audit). Now routes
-        through rt.recall_similar() which calls backend.semantic_search().
+        Three-tier strategy (audit fix May 2026 §8 P1.6, then Dvalin21
+        follow-up): try real semantic first (needs [ai] extra), fall back
+        to FTS5 lexical search if semantic is empty/unavailable, finally
+        fall back to keyword/prefix search. Sets `_search_mode` on self so
+        the MCP wrapper can surface which engine ran.
         """
+        self._search_mode = "semantic"
         try:
             sr = self._rt.recall_similar(query, limit=limit)
+            items = self._extract_items(sr)
+            if items:
+                return items
+            # Empty semantic result — try FTS5 lexical fallback BEFORE prefix.
+            # This is the "fall back to FTS5/LIKE matching" branch the auditor
+            # asked for as option (b). The agent's underlying SQLite client
+            # exposes _keyword_search for BM25-ranked full-text lookup.
+            fts_items = self._fts_fallback(query, limit)
+            if fts_items:
+                self._search_mode = "lexical"
+                return fts_items
+            # Both empty — return empty with mode still "semantic" so the
+            # MCP wrapper can emit the "install [ai]" advisory correctly.
+            return []
         except Exception:
-            # Fall back to keyword/prefix search if semantic isn't available
-            # (e.g. the [ai] extra is not installed and no embedding model loaded)
+            # Hard exception in semantic path (e.g. backend missing) —
+            # try FTS5 first, then prefix as final fallback.
+            try:
+                fts_items = self._fts_fallback(query, limit)
+                if fts_items:
+                    self._search_mode = "lexical"
+                    return fts_items
+            except Exception:
+                pass
+            self._search_mode = "prefix"
             sr = self._rt.search(query, limit=limit)
             if hasattr(sr, "items"):
                 return sr.items
             return sr if isinstance(sr, list) else []
 
-        # SearchResult shape: .results or .matches or list-like
+    def _extract_items(self, sr):
         items = getattr(sr, "results", None) or getattr(sr, "matches", None) or sr
         if isinstance(items, list):
             return items
         if hasattr(items, "items"):
             return items.items
         return []
+
+    def _fts_fallback(self, query, limit):
+        """Call backend's BM25-ranked FTS5 keyword search if available.
+        Returns a normalized list of {key, value} dicts on hit, [] on miss.
+        Quietly returns [] if FTS isn't available (e.g. non-sqlite backend).
+        """
+        try:
+            backend = getattr(self._rt, "backend", None)
+            if backend is None:
+                return []
+            client = getattr(backend, "client", backend)
+            ks = getattr(client, "_keyword_search", None)
+            if ks is None:
+                return []
+            collection = getattr(backend, "collection", "agent_memory")
+            raw = ks(query, collection=collection, limit=limit) or []
+            # Normalise: each raw row has {id, bm25_score, payload: {name, data, ...}}
+            # Filter to this agent's namespace + return a stable shape.
+            prefix = f"agents:{self._rt.agent_id}:"
+            out = []
+            for r in raw:
+                payload = (r.get("payload") or {}) if isinstance(r, dict) else {}
+                name = payload.get("name") or ""
+                if not name.startswith(prefix):
+                    continue
+                key = name[len(prefix):]
+                data = payload.get("data")
+                if isinstance(data, str):
+                    try:
+                        import json as _j
+                        data = _j.loads(data)
+                    except Exception:
+                        pass
+                val = data
+                if isinstance(data, dict):
+                    val = data.get("value", data)
+                out.append({"key": key, "value": val,
+                            "score": r.get("bm25_score"),
+                            "match_type": "lexical"})
+            return out
+        except Exception:
+            return []
 
     # ── methods previously missing — caused AttributeError on every MCP call ──
     # The auditor reported 6 tools throwing AttributeError because the MCP
@@ -575,21 +641,35 @@ def octopoda_recall_similar(agent_id: str, query: str, limit: int = 10) -> dict:
     """
     agent = _get_agent(agent_id)
     result, latency = _timed(lambda: agent.search(query, limit=limit))
+    # `mode` is set by the adapter to one of: "semantic", "lexical", "prefix".
+    # Surfacing it in the response so callers know which engine returned the
+    # items — addresses the audit's "indistinguishable empty results" concern.
+    mode = getattr(agent, "_search_mode", "semantic")
     response = {
         "count": len(result),
         "items": result,
+        "mode": mode,
         "latency_us": latency,
     }
     # Audit fix: empty results + no [ai] extra installed → surface a clear
-    # advisory instead of silently returning [], so callers don't misread
-    # "no semantic match" as "no matching memories."
+    # advisory. With the new FTS5 fallback (3.1.15), this only fires when
+    # BOTH semantic AND lexical engines returned nothing — meaning the data
+    # really doesn't match. Still nudges users toward [ai] for better recall.
     if len(result) == 0 and not _has_ai_extra():
         response["advisory"] = (
-            "Semantic search returned no results AND the [ai] extra is not "
-            "installed. Install with `pip install octopoda[ai]` to enable "
-            "embedding-based similarity. Without it, recall_similar falls "
-            "back to keyword/prefix search and may miss semantically-similar "
-            "but lexically-different memories."
+            "Both semantic and lexical (FTS5) search returned no results, "
+            "and the [ai] extra is not installed. Install with "
+            "`pip install octopoda[ai]` to enable embedding-based similarity. "
+            "Without it, recall_similar uses lexical/keyword search only and "
+            "may miss semantically-similar but lexically-different memories."
+        )
+    elif mode == "lexical":
+        # We DID find results, but via FTS5 not real semantic. Let the caller
+        # know so they can decide whether to install [ai] for better quality.
+        response["advisory"] = (
+            "Results returned via lexical (FTS5) search because semantic "
+            "search wasn't available. For embedding-based similarity, "
+            "install with `pip install octopoda[ai]`."
         )
     return response
 

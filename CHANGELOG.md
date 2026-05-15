@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.1.15 (2026-05-15)
+
+Response to Dvalin21 GitHub issue on `octopoda_recall_similar`. The routing fix in 3.1.8 and the advisory in 3.1.11 covered options (a) and (c) of his report; this release closes option (b): **FTS5 lexical fallback when semantic search returns empty**.
+
+- Adapter's `search()` now uses a three-tier strategy: semantic → FTS5 lexical → prefix. If `recall_similar` returns empty AND the `[ai]` extra isn't installed, it tries BM25-ranked FTS5 keyword search before giving up.
+- MCP tool `octopoda_recall_similar` now exposes a `mode` field in the response: `"semantic"`, `"lexical"`, or `"prefix"` — callers can tell which engine returned the items.
+- When results came from lexical fallback, the response carries an advisory pointing the user to `pip install octopoda[ai]` for higher-quality semantic matches.
+- When both semantic and lexical returned nothing, the advisory escalates: "data really doesn't match, but if you want fuzzier matching install [ai]".
+
 ## 3.1.14 (2026-05-15)
 
 Patch on top of 3.1.13. Closes two bugs surfaced by running 3.1.13 in prod:
