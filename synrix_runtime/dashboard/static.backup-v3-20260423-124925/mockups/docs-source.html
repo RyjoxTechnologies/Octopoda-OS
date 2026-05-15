@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Octopodas — Integration Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#000000;
+    --panel:#0b0b0c;
+    --panel-2:#131315;
+    --line:rgba(255,255,255,0.08);
+    --line-strong:rgba(255,255,255,0.14);
+    --ink:#ffffff;
+    --ink-2:#b9b9bd;
+    --ink-3:#7a7a80;
+    --accent:#f05523;
+    --accent-2:#fbbf24;
+    --accent-ink:#0b0b0c;
+    --radius:14px;
+    --radius-lg:22px;
+    --maxw:1160px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:'Geist','Inter',system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;
+    font-size:16px; line-height:1.6; -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility; overflow-x:hidden;
+  }
+  .mono{font-family:'Geist Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px}
+  h1,h2,h3,h4{font-weight:600;letter-spacing:-0.02em;margin:0;text-wrap:balance}
+  h1{font-size:clamp(40px,5vw,64px);line-height:1.05;letter-spacing:-0.035em}
+  h2{font-size:clamp(26px,3vw,36px);line-height:1.15;letter-spacing:-0.025em;margin:64px 0 18px}
+  h3{font-size:20px;line-height:1.3;margin:36px 0 12px}
+  p{color:var(--ink-2);margin:0 0 14px}
+  .muted{color:var(--ink-3)}
+  .hl{color:var(--accent)}
+
+  .btn{
+    display:inline-flex;align-items:center;gap:10px;
+    padding:12px 18px;border-radius:999px;font-weight:500;font-size:14px;
+    border:1px solid transparent;cursor:pointer;transition:.2s ease;
+  }
+  .btn svg{width:14px;height:14px}
+  .btn-primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+  .btn-primary:hover{background:var(--accent-2);transform:translateY(-1px)}
+
+  /* BRAND */
+  .brand-fixed{
+    position:fixed; top:18px; left:24px; z-index:60;
+    display:flex; align-items:center; gap:10px;
+  }
+  .brand-fixed .logo-img{width:38px;height:38px;object-fit:contain;display:block}
+  .brand-fixed .brand-word{font-weight:600;letter-spacing:-0.02em;font-size:18px}
+
+  /* NAV */
+  .nav{position:sticky;top:18px;z-index:50;display:flex;justify-content:center;pointer-events:none}
+  .nav-inner{
+    pointer-events:auto;position:relative;display:flex;align-items:center;gap:32px;
+    padding:11px 12px 11px 20px;
+    background:rgba(15,15,17,0.55);
+    border:1px solid var(--line-strong);
+    border-radius:999px;
+    backdrop-filter:blur(18px) saturate(160%);
+    -webkit-backdrop-filter:blur(18px) saturate(160%);
+    box-shadow:0 8px 32px rgba(0,0,0,.4);
+  }
+  .nav ul{list-style:none;margin:0;padding:0;display:flex;gap:26px}
+  .nav a{font-size:14px;color:var(--ink-2)}
+  .nav a:hover{color:var(--ink)}
+  .nav .cta{padding:8px 14px;font-size:13px}
+
+  /* HERO */
+  .hero{padding:120px 0 50px}
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:8px;
+    padding:6px 12px;border:1px solid var(--line-strong);
+    border-radius:999px;font-size:12px;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--ink-2);background:rgba(255,255,255,0.02);
+    margin-bottom:22px;
+  }
+  .eyebrow .dot{width:6px;height:6px;border-radius:999px;background:var(--accent)}
+  .hero p.lede{font-size:18px;color:var(--ink-2);max-width:720px;margin-top:18px}
+
+  /* LAYOUT */
+  .doc-layout{display:grid;grid-template-columns:240px 1fr;gap:60px;padding:40px 0 120px}
+  @media (max-width:900px){.doc-layout{grid-template-columns:1fr;gap:30px}}
+  .toc{
+    position:sticky; top:90px; align-self:start;
+    border:1px solid var(--line); border-radius:var(--radius); padding:18px;
+    background:var(--panel); max-height:calc(100vh - 120px); overflow:auto;
+  }
+  .toc h5{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);margin:0 0 12px}
+  .toc ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+  .toc a{font-size:13px;color:var(--ink-2);display:block;padding:4px 0;border-left:2px solid transparent;padding-left:10px;margin-left:-12px}
+  .toc a:hover{color:var(--ink);border-left-color:var(--accent)}
+
+  .content{max-width:780px}
+  .content p{font-size:16px}
+  .content ol, .content ul{padding-left:22px;color:var(--ink-2)}
+  .content li{margin:8px 0}
+  .content strong{color:var(--ink);font-weight:600}
+  .content em{color:var(--ink);font-style:italic}
+  .content code{
+    font-family:'Geist Mono',ui-monospace,monospace;
+    font-size:13px;background:rgba(240,85,35,.10);
+    color:#ffb597;padding:2px 6px;border-radius:5px;
+    border:1px solid rgba(240,85,35,.18);
+  }
+
+  pre{
+    background:#0a0a0b;
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:18px 20px;
+    overflow-x:auto;
+    margin:18px 0 22px;
+    font-family:'Geist Mono',ui-monospace,monospace;
+    font-size:13px; line-height:1.6;
+    color:#e6e6ea;
+  }
+  pre code{background:transparent;border:0;color:inherit;padding:0;font-size:13px}
+
+  .callout{
+    border-left:3px solid var(--accent);
+    background:rgba(240,85,35,.06);
+    padding:14px 18px; border-radius:0 12px 12px 0;
+    margin:18px 0 22px; color:var(--ink-2); font-size:14px;
+  }
+  .callout strong{color:var(--ink)}
+
+  .step{
+    counter-increment:step;
+    border:1px solid var(--line); border-radius:var(--radius);
+    padding:22px 24px; margin:14px 0;
+    background:var(--panel);
+  }
+  .step::before{
+    content:counter(step);
+    display:inline-flex;align-items:center;justify-content:center;
+    width:26px;height:26px;border-radius:999px;
+    background:var(--accent);color:var(--accent-ink);
+    font-weight:600;font-size:13px;margin-right:10px;
+    vertical-align:middle;
+  }
+  .steps{counter-reset:step}
+
+  table{
+    width:100%; border-collapse:collapse; margin:18px 0; font-size:14px;
+    border:1px solid var(--line); border-radius:var(--radius); overflow:hidden;
+  }
+  th, td{padding:12px 14px; text-align:left; border-bottom:1px solid var(--line)}
+  th{background:var(--panel-2); color:var(--ink); font-weight:600; font-size:12px; letter-spacing:.04em; text-transform:uppercase}
+  td{color:var(--ink-2)}
+  tr:last-child td{border-bottom:0}
+
+  .section-tag{
+    display:inline-block; font-size:11px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--accent); font-weight:600; margin-top:48px;
+  }
+
+  /* FOOTER */
+  footer{border-top:1px solid var(--line); padding:60px 0 40px; margin-top:60px}
+  .foot-row{display:flex; justify-content:space-between; gap:40px; flex-wrap:wrap}
+  .foot-row p{font-size:14px}
+  .fine{display:flex; justify-content:space-between; margin-top:30px; padding-top:20px; border-top:1px solid var(--line); color:var(--ink-3); font-size:12px}
+</style>
+</head>
+<body>
+
+<a class="brand-fixed" href="octopodas-source.html" aria-label="Octopodas home">
+  <img class="logo-img" src="assets/octopoda-logo.png" alt="Octopoda"/>
+  <span class="brand-word">Octopodas</span>
+</a>
+
+<header class="nav">
+  <div class="nav-inner">
+    <ul>
+      <li><a href="octopodas-source.html">Home</a></li>
+      <li><a href="product-source.html">Product</a></li>
+      <li><a href="/course">Learn</a></li>
+      <li><a href="/blog">Blog</a></li>
+      <li><a href="pricing-source.html">Pricing</a></li>
+      <li><a href="docs-source.html">Docs</a></li>
+    </ul>
+    <a class="btn btn-primary cta" href="/signup" target="_top">Start now
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 5l7 7-7 7"/></svg>
+    </a>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span> Integration guide</span>
+    <h1>The Octopoda<br/>Integration Guide</h1>
+    <p class="lede"><strong>What this guide teaches:</strong> how to add persistent memory to an AI agent in any framework. <strong>What you'll have at the end of each section:</strong> an agent that remembers something, closes, reopens, and still remembers it. <strong>Time per section:</strong> 2 minutes.</p>
+  </div>
+</section>
+
+<div class="wrap">
+  <div class="doc-layout">
+
+    <aside class="toc">
+      <h5>On this page</h5>
+      <ul>
+        <li><a href="#before">Before you start</a></li>
+        <li><a href="#s1">1 — The basics</a></li>
+        <li><a href="#s2">2 — LangChain</a></li>
+        <li><a href="#s3">3 — CrewAI</a></li>
+        <li><a href="#s4">4 — AutoGen</a></li>
+        <li><a href="#s5">5 — OpenAI Agents</a></li>
+        <li><a href="#s6">6 — MCP server</a></li>
+        <li><a href="#s7">7 — OpenClaw</a></li>
+        <li><a href="#ts">Troubleshooting</a></li>
+        <li><a href="#proof">Proof it works</a></li>
+      </ul>
+    </aside>
+
+    <main class="content">
+
+      <h2 id="before">Before you start (do this once)</h2>
+
+      <div class="steps">
+        <div class="step">
+          <strong>Install Python 3.9 or newer.</strong> Check:
+<pre><code>python --version</code></pre>
+          If this shows 3.8 or lower, stop. Upgrade Python first. Nothing below will work otherwise.
+        </div>
+
+        <div class="step">
+          <strong>Install Octopoda:</strong>
+<pre><code>pip install octopoda</code></pre>
+          Should see: <code>Successfully installed octopoda-3.1.3</code>. If not, see Troubleshooting A at the bottom.
+        </div>
+
+        <div class="step">
+          <strong>Get your API key.</strong> Go to <a href="/signup" target="_top" onclick="window.top.location.href=this.href; return false;" class="hl">https://octopodas.com/signup</a>, verify your email, copy the key from the dashboard. Keep it somewhere.
+        </div>
+
+        <div class="step">
+          <strong>Set the key as an environment variable.</strong> Every example below assumes this is set.
+<pre><code>Mac/Linux:        export OCTOPODA_API_KEY=sk-octopoda-YOUR_ACTUAL_KEY
+Windows PS:       $env:OCTOPODA_API_KEY="sk-octopoda-YOUR_ACTUAL_KEY"
+Windows CMD:      set OCTOPODA_API_KEY=sk-octopoda-YOUR_ACTUAL_KEY</code></pre>
+          Replace <code>YOUR_ACTUAL_KEY</code> with your real key. It starts with <code>sk-octopoda-</code>.
+        </div>
+
+        <div class="step">
+          <strong>Verify the key works.</strong> Run this:
+<pre><code>import os
+from octopoda import AgentRuntime
+agent = AgentRuntime("setup_check")
+print(agent.remember("hello", "world"))</code></pre>
+          You should see <code>MemoryResult(... success=True ...)</code>. If you see <code>success=False</code> or an auth error, see Troubleshooting B.
+        </div>
+      </div>
+
+      <span class="section-tag">Section 1</span>
+      <h2 id="s1">The basics (no framework)</h2>
+      <p>Use this if you're writing raw Python without LangChain, CrewAI, etc.</p>
+<pre><code>import os
+os.environ['OCTOPODA_API_KEY'] = 'sk-octopoda-YOUR_KEY'  # or set via export
+
+from octopoda import AgentRuntime
+
+# Create an agent (agent_id is any string you want)
+agent = AgentRuntime("my_first_agent")
+
+# Write a memory
+agent.remember("user:name", "Mike")
+agent.remember("user:project", "AI startup")
+
+# Read it back
+print(agent.recall("user:name"))
+# RecallResult(value='Mike', key='user:name', latency_us=61187.1, found=True)</code></pre>
+
+      <p><strong>Verify it persists across sessions.</strong> Close Python, reopen, run:</p>
+<pre><code>from octopoda import AgentRuntime
+agent = AgentRuntime("my_first_agent")
+print(agent.recall("user:name").value)   # → "Mike"</code></pre>
+
+      <div class="callout">
+        If you see <strong>"Mike"</strong>, you're done. You now have persistent memory.<br/>
+        If it shows <code>None</code> or <code>found=False</code>: go to Troubleshooting C.
+      </div>
+
+      <span class="section-tag">Section 2</span>
+      <h2 id="s2">LangChain</h2>
+      <p><strong>What you'll build:</strong> a LangChain conversation that remembers what the user said across Python restarts.</p>
+      <p>Install:</p>
+<pre><code>pip install octopoda langchain-core</code></pre>
+      <p>The code:</p>
+<pre><code>import os
+os.environ['OCTOPODA_API_KEY'] = 'sk-octopoda-YOUR_KEY'
+
+from octopoda import LangChainMemory
+
+# Create memory. agent_id = which user or session.
+# session_id = optional sub-namespace.
+memory = LangChainMemory(agent_id="my_bot", session_id="user_mike")
+
+# Normally your LangChain ConversationChain calls these for you.
+# Shown explicitly here so you can see what's happening.
+memory.save_context(
+    {"input": "Hi, my name is Mike."},
+    {"output": "Nice to meet you, Mike!"},
+)
+memory.save_context(
+    {"input": "I work on AI agents."},
+    {"output": "Cool — what kind of agents?"},
+)
+
+# Next turn — LangChain loads the history automatically:
+history = memory.load_memory_variables({})
+print(history)
+# → {'history': "Human: Hi, my name is Mike.\nAI: Nice to meet you, Mike!\n
+#               Human: I work on AI agents.\nAI: Cool — what kind of agents?"}</code></pre>
+
+      <p><strong>Proof it persists.</strong> Close Python. Open again. Run:</p>
+<pre><code>from octopoda import LangChainMemory
+memory = LangChainMemory(agent_id="my_bot", session_id="user_mike")
+print(memory.load_memory_variables({}))</code></pre>
+      <p>You see the full history from the previous session.</p>
+
+      <p><strong>Using it with a real LangChain ConversationChain:</strong></p>
+<pre><code>from langchain.chains import ConversationChain
+from langchain_openai import ChatOpenAI  # or any LangChain LLM
+
+llm = ChatOpenAI(model="gpt-4o-mini")
+chain = ConversationChain(llm=llm, memory=memory)
+chain.predict(input="What's my name?")  # → "Your name is Mike."</code></pre>
+      <p class="muted">Troubleshooting LangChain: see Section TS-LC at the bottom.</p>
+
+      <span class="section-tag">Section 3</span>
+      <h2 id="s3">CrewAI</h2>
+      <p><strong>What you'll build:</strong> a multi-agent crew where results from one task are retrievable by a different agent in the next run.</p>
+      <p>Install:</p>
+<pre><code>pip install octopoda crewai</code></pre>
+      <p>The code:</p>
+<pre><code>import os
+os.environ['OCTOPODA_API_KEY'] = 'sk-octopoda-YOUR_KEY'
+
+from octopoda import CrewAIMemory
+
+# crew_id identifies the crew (one project = one crew_id)
+memory = CrewAIMemory(crew_id="research_crew")
+
+# Store a task result. Three args, in order: task_name, result, agent_role.
+memory.store_task_result(
+    task_name="market_scan",
+    result="Found 3 emerging competitors in vector DB space",
+    agent_role="researcher",
+)
+
+# Store a longer-term finding. Different signature: agent_role, key, finding.
+memory.store_finding(
+    agent_role="analyst",
+    key="top_competitor",
+    finding="Mem0 — most keyword-matched in HN discussions",
+)
+
+# Retrieve later (from a fresh Python session, even)
+findings = memory.get_all_findings()
+print(findings)
+# → [{'key': 'top_competitor', 'data': {...'value': 'Mem0 — most keyword...'}}]</code></pre>
+
+      <div class="callout">
+        <strong>Common trap:</strong> the two methods have different arg orders. Don't mix them up:<br/>
+        • <code>store_task_result(task_name, result, agent_role)</code> — agent_role is LAST<br/>
+        • <code>store_finding(agent_role, key, finding)</code> — agent_role is FIRST
+      </div>
+
+      <span class="section-tag">Section 4</span>
+      <h2 id="s4">AutoGen</h2>
+      <p><strong>What you'll build:</strong> a group chat where messages between multiple agents are stored and replayable.</p>
+      <p>Install:</p>
+<pre><code>pip install octopoda pyautogen</code></pre>
+      <p>The code:</p>
+<pre><code>import os
+os.environ['OCTOPODA_API_KEY'] = 'sk-octopoda-YOUR_KEY'
+
+from octopoda import AutoGenMemory
+
+# Use group_id (NOT agent_id). One group chat = one group_id.
+memory = AutoGenMemory(group_id="research_team")
+
+# Store messages — three positional args: sender, recipient, content
+memory.store_message("user_proxy", "researcher", "Analyze the vector DB market")
+memory.store_message("researcher", "user_proxy", "Market size is $2.1B, growing 38% YoY")
+memory.store_message("user_proxy", "analyst", "Who are the top 3?")
+memory.store_message("analyst", "user_proxy", "Pinecone, Weaviate, Qdrant")
+
+# Retrieve history
+history = memory.get_conversation_history()
+for msg in history:
+    print(f"{msg['sender']} → {msg['recipient']}: {msg['content']}")</code></pre>
+
+      <div class="callout">
+        <strong>The key gotcha:</strong> it's <code>group_id</code>, NOT <code>agent_id</code>. If you pass <code>agent_id="x"</code> you'll get <code>TypeError: __init__() got an unexpected keyword argument 'agent_id'</code>.
+      </div>
+
+      <span class="section-tag">Section 5</span>
+      <h2 id="s5">OpenAI Agents SDK</h2>
+      <p><strong>What you'll build:</strong> an OpenAI assistant whose thread state persists across server restarts.</p>
+      <p>Install:</p>
+<pre><code>pip install octopoda openai</code></pre>
+      <p>The code:</p>
+<pre><code>import os
+os.environ['OCTOPODA_API_KEY'] = 'sk-octopoda-YOUR_KEY'
+
+from octopoda import OpenAIAgentsMemory
+
+# No arguments — the class takes none.
+memory = OpenAIAgentsMemory()
+
+# Save conversation thread state mid-flight
+memory.store_thread_state(
+    thread_id="thread_12345",
+    state={
+        "messages": [
+            {"role": "user", "content": "Help me plan a trip to Tokyo"},
+            {"role": "assistant", "content": "Sure. How many days?"},
+        ],
+        "step": 1,
+    },
+)
+
+# Save a completed run's outcome
+memory.store_run_result(
+    run_id="run_67890",
+    result="Completed itinerary: 5 days, 4 neighborhoods, $3200 budget",
+)
+
+# Next session — restore the thread
+restored = memory.restore_thread("thread_12345")
+print(restored["state"]["messages"])</code></pre>
+
+      <div class="callout">
+        <strong>The key gotcha:</strong> <code>OpenAIAgentsMemory()</code> takes NO arguments. Don't pass <code>agent_id</code> or anything. It manages agent identity internally through <code>thread_id</code> and <code>run_id</code>.
+      </div>
+
+      <span class="section-tag">Section 6</span>
+      <h2 id="s6">MCP server (Claude Code, Cursor, Windsurf, Codex)</h2>
+      <p><strong>What you'll build:</strong> Claude Code (or Cursor/Codex) gets 28+ memory tools that persist across sessions.</p>
+      <p>Install the Octopoda MCP extras:</p>
+<pre><code>pip install "octopoda[mcp]"</code></pre>
+      <p>For Claude Code, add to your <code>~/.claude/mcp.json</code>:</p>
+<pre><code>{
+  "mcpServers": {
+    "octopoda": {
+      "command": "python",
+      "args": ["-m", "synrix_runtime.api.mcp_server"],
+      "env": {
+        "OCTOPODA_API_KEY": "sk-octopoda-YOUR_KEY"
+      }
+    }
+  }
+}</code></pre>
+      <p>Want to use it WITHOUT a cloud account? Set the env var to any string:</p>
+<pre><code>"env": { "OCTOPODA_API_KEY": "local" }</code></pre>
+      <p>This runs in local mode using SQLite at <code>~/.synrix/data/synrix.db</code>.</p>
+
+      <p><strong>Verify it works in your terminal first:</strong></p>
+<pre><code>OCTOPODA_API_KEY="sk-octopoda-YOUR_KEY" python -m synrix_runtime.api.mcp_server</code></pre>
+      <p>You should see no errors. It's waiting for JSON-RPC input. Press Ctrl+C to exit.</p>
+      <p>Now restart Claude Code. Ask: <em>"Use octopoda_remember to store my name as Mike."</em> Claude will use the tool. Ask in a new session: <em>"Use octopoda_recall to get my name."</em> Claude returns "Mike."</p>
+
+      <span class="section-tag">Section 7</span>
+      <h2 id="s7">OpenClaw (Node.js, different path)</h2>
+      <p>OpenClaw is a Node.js agent, not a Python framework. Integration is via a downloadable skill file, not pip.</p>
+      <p><strong>Requirements:</strong></p>
+      <ul>
+        <li>Node.js installed</li>
+        <li>OpenClaw installed: <code>npm install -g openclaw</code></li>
+        <li>The Octopoda Memory skill file (download from <a href="/docs/integrations/openclaw" target="_top" onclick="window.top.location.href=this.href; return false;" class="hl">octopodas.com/docs/integrations/openclaw</a>)</li>
+      </ul>
+      <p>Drop the skill file into your OpenClaw agent's skill directory. Set <code>OCTOPODA_API_KEY</code> in the environment. Done.</p>
+
+      <h2 id="ts">Troubleshooting</h2>
+
+      <h3>TS-A. <code>pip install octopoda</code> fails</h3>
+      <p>If you see <code>error: Microsoft Visual C++ 14.0 is required</code> (Windows only):</p>
+      <ol>
+        <li>Go to <a class="hl" href="https://visualstudio.microsoft.com/visual-cpp-build-tools/" target="_blank" rel="noopener">visualstudio.microsoft.com/visual-cpp-build-tools/</a></li>
+        <li>Install the Build Tools (pick "Desktop development with C++")</li>
+        <li>Restart your terminal, retry <code>pip install</code></li>
+      </ol>
+      <p>If you see <code>ERROR: Could not find a version that satisfies the requirement octopoda</code>:</p>
+      <ul>
+        <li>Check Python version: <code>python --version</code>. Must be 3.9 or newer.</li>
+        <li>Try <code>pip install --upgrade pip</code> first, then retry</li>
+      </ul>
+      <p>If pip hangs forever with no output: run <code>pip install -v octopoda</code>. Usually a network issue or corporate firewall blocking PyPI.</p>
+
+      <h3>TS-B. AgentRuntime created but writes fail with 401</h3>
+      <p>You'll see either "Authentication required" or <code>success=False</code>.</p>
+      <ul>
+        <li>Check your key is set: <code>python -c "import os; print(os.environ.get('OCTOPODA_API_KEY'))"</code></li>
+        <li>If it shows your key but auth fails: it may have been rotated, or there's a whitespace character pasted in. Regenerate at <a class="hl" href="/dashboard/settings" target="_top">/dashboard/settings</a>.</li>
+        <li>If it shows <code>None</code>: the env var isn't being picked up. On Windows, setting it in CMD doesn't persist to a new terminal. Set it inside your script: <code>os.environ['OCTOPODA_API_KEY'] = 'sk-octopoda-...'</code></li>
+      </ul>
+
+      <h3>TS-C. Memory not persisting between Python sessions</h3>
+      <ul>
+        <li>Use the SAME <code>agent_id</code> in both sessions. <code>AgentRuntime("bot_a")</code> and <code>AgentRuntime("bot_b")</code> are two different agents.</li>
+        <li>If using local mode: memory lives at <code>~/.synrix/data/synrix.db</code>. Delete that file or switch user account → memory gone.</li>
+        <li>If cloud mode and <code>recall</code> returns <code>found=False</code> right after a write: wait 1–2 seconds and retry. Very rare read-after-write cache miss.</li>
+      </ul>
+
+      <h3>TS-LC (LangChain). save_context works but load_memory_variables returns empty</h3>
+      <ul>
+        <li>Use the same <code>session_id</code> across <code>save_context</code> and <code>load_memory_variables</code>.</li>
+        <li>Make sure save actually ran before load — not just in the script, but in time.</li>
+        <li>Don't wrap with LangChain's <code>ConversationBufferMemory</code>. <code>LangChainMemory</code> is a drop-in replacement, not additive.</li>
+      </ul>
+
+      <h3>TS-3 (CrewAI). store_finding gives TypeError</h3>
+      <p>Wrong arg name. It is <code>agent_role, key, finding</code> — in that order. Not <code>name</code>, not <code>content</code>.</p>
+<pre><code>memory.store_finding(agent_role="researcher", key="x", finding="Y")</code></pre>
+
+      <h3>TS-4 (AutoGen). TypeError: unexpected keyword argument 'agent_id'</h3>
+<pre><code>memory = AutoGenMemory(group_id="my_group")  # not agent_id=</code></pre>
+
+      <h3>TS-6 (MCP). MCP server exits immediately</h3>
+      <p>If you see <code>ERROR: OCTOPODA_API_KEY not set</code>: you're on an old version. Upgrade:</p>
+<pre><code>pip install --upgrade "octopoda[mcp]"</code></pre>
+      <p>Version 3.1.3+ supports local mode without a key.</p>
+      <p>If Claude Code says "MCP server not found": check the command path in <code>~/.claude/mcp.json</code>. Use the absolute path if needed: <code>/usr/local/bin/python3</code> or <code>C:\Python313\python.exe</code>.</p>
+
+      <h2 id="proof">Proof each of these works</h2>
+      <p>I personally ran each section's code against the live Octopoda cloud API. Here are the actual outputs:</p>
+      <table>
+        <thead><tr><th>Section</th><th>Verified output</th><th>Date</th></tr></thead>
+        <tbody>
+          <tr><td>Vanilla</td><td><code>found=True, value=Mike</code> across fresh AgentRuntime</td><td>2026-04-22</td></tr>
+          <tr><td>LangChain</td><td><code>{'history': "Human: Hi, my name is Mike..."}</code> restored</td><td>2026-04-22</td></tr>
+          <tr><td>CrewAI</td><td><code>get_all_findings()</code> returned the stored finding</td><td>2026-04-22</td></tr>
+          <tr><td>AutoGen</td><td>4 messages stored, 4 retrieved, exact content match</td><td>2026-04-22</td></tr>
+          <tr><td>OpenAI</td><td>Full thread state restored exactly</td><td>2026-04-22</td></tr>
+          <tr><td>MCP</td><td><code>octopoda_remember</code> returned <code>success=true</code></td><td>2026-04-22</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout">
+        If you follow this guide and it doesn't work, email <a class="hl" href="mailto:joe@octopodas.com">joe@octopodas.com</a> with the exact error and the exact code you ran. I'll fix it or walk you through it.
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-row">
+      <p>© 2026 Octopodas. All rights reserved.</p>
+      <p class="mono muted">v1.0 · built with care</p>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

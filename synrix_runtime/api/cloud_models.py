@@ -55,7 +55,10 @@ class RestoreRequest(BaseModel):
 class SharedWriteRequest(BaseModel):
     key: str = Field(..., min_length=1, max_length=512)
     value: Any
-    author_agent_id: str = Field(..., min_length=1, max_length=128)
+    # Default to "shared" so direct REST users can POST without specifying
+    # an author. SDK clients that track per-agent attribution still pass
+    # an explicit value; the field is preserved for that case.
+    author_agent_id: str = Field(default="shared", min_length=1, max_length=128)
 
     @field_validator("value")
     @classmethod

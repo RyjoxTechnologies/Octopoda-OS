@@ -15,7 +15,7 @@ class TestHealthAndSystem:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert "version" in data and isinstance(data["version"], str) and len(data["version"]) > 0
+        assert data["version"] == "3.0.3"
         assert data["uptime_seconds"] >= 0
 
     def test_system_status(self, api_client):

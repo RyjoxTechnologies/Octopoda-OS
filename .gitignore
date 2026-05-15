@@ -68,3 +68,16 @@ mcpb/
 # Generated research reports (not canonical source)
 FEATURE-ANALYSIS.md
 RESEARCH-REPORT.md
+
+# cruft from emergency hotfixes / backups (added 2026-05-15)
+.env.bak
+**/*.bak
+**/*.bak.*
+synrix_runtime/dashboard/static.backup-*/
+monitor_cron.log
+
+# venv must NEVER be committed (caused GitHub 100MB push rejection on dashboard-perf-100-agents)
+venv/
+.venv/
+**/venv/
+**/.venv/

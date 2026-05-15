@@ -330,6 +330,65 @@ class SynrixPostgresClient:
         finally:
             self._release(conn)
 
+    def add_node_ephemeral(self, name: str, data: str = "", node_type: str = "ephemeral",
+                           collection: str = None) -> Optional[int]:
+        """Write an ephemeral node — for liveness keys (heartbeat, last_active, etc).
+
+        Unlike add_node, this does NOT keep version history. The current row
+        (if any) is deleted before inserting the new one, so the table has
+        exactly one row per (tenant_id, name) at any time. Use this for keys
+        where:
+          * high write frequency (every few seconds)
+          * nobody cares about the history
+          * keeping history would blow up table size (see: 212k heartbeats/agent
+            observed in prod before this fix)
+
+        No embedding: ephemeral keys aren't semantically searched.
+        """
+        now = time.time()
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+
+            # Normalise data shape exactly like add_node.
+            if isinstance(data, str):
+                try:
+                    data_json = json.loads(data) if data else {}
+                except (json.JSONDecodeError, ValueError):
+                    data_json = {"value": data}
+            elif isinstance(data, dict):
+                data_json = data
+            else:
+                data_json = {"value": str(data)}
+
+            metadata = {"type": node_type, "ephemeral": True}
+            data_serialized = _sanitize_for_pg_json(json.dumps(data_json, ensure_ascii=False))
+            meta_serialized = _sanitize_for_pg_json(json.dumps(metadata, ensure_ascii=False))
+
+            # Drop ALL previous rows for this (tenant, name). This keeps the
+            # table flat: exactly one row per ephemeral key. Uses the partial
+            # index idx_nodes_tenant_name when the delete targets valid_until=0
+            # rows and a range scan for history.
+            cur.execute(
+                "DELETE FROM nodes WHERE tenant_id = %s AND name = %s",
+                (self.tenant_id, name)
+            )
+            cur.execute(
+                "INSERT INTO nodes (tenant_id, name, data, metadata, valid_from, valid_until) "
+                "VALUES (%s, %s, %s, %s, %s, 0) RETURNING id",
+                (self.tenant_id, name, data_serialized, meta_serialized, now)
+            )
+            node_id = cur.fetchone()[0]
+            conn.commit()
+            return node_id
+        except Exception as e:
+            conn.rollback()
+            logger.warning("add_node_ephemeral error: %s | tenant=%s key=%s",
+                           e, self.tenant_id, name)
+            return None
+        finally:
+            self._release(conn)
+
     def query_prefix(self, prefix: str, collection: str = None, limit: int = 100) -> List[Dict[str, Any]]:
         """Query nodes by name prefix. Only returns current (non-invalidated) versions."""
         conn = self._conn()

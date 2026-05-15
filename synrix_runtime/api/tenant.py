@@ -68,7 +68,7 @@ def _get_pg_pool(dsn: str = None):
         dsn = dsn or os.environ.get("DATABASE_URL", "")
         if not dsn:
             raise ValueError("DATABASE_URL not set")
-        _pg_pool = pg_pool.ThreadedConnectionPool(minconn=1, maxconn=12, dsn=dsn)
+        _pg_pool = pg_pool.ThreadedConnectionPool(minconn=2, maxconn=int(os.environ.get("OCTOPODA_TENANT_POOL_MAX", "32")), dsn=dsn)
         return _pg_pool
 
 

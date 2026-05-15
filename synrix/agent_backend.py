@@ -252,6 +252,29 @@ class SynrixAgentBackend:
             logger.warning(f"Failed to write to SYNRIX ({self.backend_type}): {e}")
             return None
 
+    def write_ephemeral(self, key: str, value: Any, metadata: Optional[Dict] = None) -> Optional[int]:
+        """Write a non-versioned key — drops any prior row, inserts fresh.
+
+        Use this for liveness pings (heartbeat, last_active) and anything else
+        where history would accumulate uselessly. Falls back to normal write
+        if the backend doesn't implement add_node_ephemeral.
+        """
+        data = {
+            "value": value,
+            "metadata": metadata or {},
+            "timestamp": self._get_timestamp(),
+        }
+        data_str = json.dumps(data, default=str)
+        try:
+            fn = getattr(self.client, "add_node_ephemeral", None)
+            if fn is None:
+                # Older backend (e.g. SQLite path) — fall back to normal write.
+                return self.write(key, value, metadata=metadata)
+            return fn(name=key, data=data_str, collection=self.collection)
+        except Exception as e:
+            logger.warning(f"Failed to write_ephemeral to SYNRIX ({self.backend_type}): {e}")
+            return None
+
     def read(self, key: str) -> Optional[Dict[str, Any]]:
         """
         Read data from SYNRIX by exact key.

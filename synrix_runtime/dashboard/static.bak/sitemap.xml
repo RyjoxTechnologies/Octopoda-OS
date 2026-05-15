@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <!-- Core pages -->
+  <url><loc>https://octopodas.com/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>
+  <url><loc>https://octopodas.com/features</loc><changefreq>monthly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://octopodas.com/pricing</loc><changefreq>monthly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://octopodas.com/comparison</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://octopodas.com/use-cases</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://octopodas.com/security</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+
+  <!-- Blog -->
+  <url><loc>https://octopodas.com/blog</loc><changefreq>weekly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://octopodas.com/blog/1-million-agent-operations</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://octopodas.com/blog/give-ai-agent-memory-5-minutes</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://octopodas.com/blog/agents-remembering-everything</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://octopodas.com/blog/30-days-tracking-ai-agents</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://octopodas.com/blog/what-are-ai-agents</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://octopodas.com/blog/your-ai-agent-has-amnesia</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+
+  <!-- Course -->
+  <url><loc>https://octopodas.com/course</loc><changefreq>weekly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://octopodas.com/course/what-are-ai-agents</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/course/build-first-agent</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/course/tools-and-actions</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/course/agent-memory</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/course/agent-superpowers</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/course/multi-agent-teams</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/course/debugging-agents</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/course/production</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/course/real-world-projects</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/course/whats-next</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+
+  <!-- Docs -->
+  <url><loc>https://octopodas.com/docs/quickstart</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://octopodas.com/docs/python-sdk</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/docs/installation</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/docs/agents-and-memories</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/docs/semantic-search</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/docs/shared-memory</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/docs/crash-recovery</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/docs/integrations</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://octopodas.com/docs/api/authentication</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+</urlset>

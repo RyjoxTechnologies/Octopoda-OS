@@ -79,7 +79,8 @@ class RecoveryOrchestrator:
             metadata={"type": "recovery_state"}
         )
         self.backend.write(f"runtime:agents:{agent_id}:state", {"value": "running"}, metadata={"type": "agent_state"})
-        self.backend.write(f"runtime:agents:{agent_id}:heartbeat", {"value": time.time()}, metadata={"type": "heartbeat"})
+        # Heartbeat is a liveness ping — ephemeral (no history).
+        self.backend.write_ephemeral(f"runtime:agents:{agent_id}:heartbeat", time.time(), metadata={"type": "heartbeat"})
         step_timings["write_state_us"] = (time.perf_counter_ns() - s) / 1000
 
         total_us = (time.perf_counter_ns() - total_start) / 1000

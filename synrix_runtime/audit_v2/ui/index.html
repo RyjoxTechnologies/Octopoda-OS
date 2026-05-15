@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Octopoda Audit Trail (standalone viewer)</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐙</text></svg>">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🐙</span>
+      <span class="title">Audit Trail <span class="tag">standalone viewer</span></span>
+    </div>
+    <div class="auth-row">
+      <input
+        type="password"
+        id="api-key"
+        placeholder="Paste Octopoda API key (sk-octopoda-...)"
+        autocomplete="off"
+      >
+      <button id="btn-connect">Connect</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <section class="filter-section">
+        <label class="lbl">Agent</label>
+        <input type="text" id="f-agent" placeholder="any agent">
+      </section>
+
+      <section class="filter-section">
+        <label class="lbl">Event type</label>
+        <select id="f-event-type">
+          <option value="">Any type</option>
+          <option value="memory.write">memory.write</option>
+          <option value="memory.read">memory.read</option>
+          <option value="memory.important">memory.important</option>
+          <option value="memory.semantic_search">memory.semantic_search</option>
+          <option value="memory.share">memory.share</option>
+          <option value="memory.shared_read">memory.shared_read</option>
+          <option value="memory.delete">memory.delete</option>
+          <option value="tool.call">tool.call</option>
+          <option value="tool.result">tool.result</option>
+          <option value="tool.error">tool.error</option>
+          <option value="conversation.message">conversation.message</option>
+          <option value="crew.task">crew.task</option>
+          <option value="crew.finding">crew.finding</option>
+          <option value="autogen.turn">autogen.turn</option>
+          <option value="thread.updated">thread.updated</option>
+          <option value="decision">decision</option>
+          <option value="crash">crash</option>
+          <option value="recovery">recovery</option>
+        </select>
+      </section>
+
+      <section class="filter-section">
+        <label class="lbl">Time range</label>
+        <select id="f-range">
+          <option value="3600">Last hour</option>
+          <option value="21600">Last 6 hours</option>
+          <option value="86400" selected>Last 24 hours</option>
+          <option value="604800">Last 7 days</option>
+          <option value="0">All time</option>
+        </select>
+      </section>
+
+      <section class="filter-section">
+        <label class="lbl">Search</label>
+        <input type="search" id="f-search" placeholder="content contains...">
+      </section>
+
+      <section class="buttons-section">
+        <button id="btn-refresh">Refresh</button>
+        <button id="btn-verify" class="secondary">Verify integrity</button>
+        <button id="btn-export" class="secondary">Export CSV</button>
+      </section>
+
+      <section id="integrity-panel" class="status-panel hidden"></section>
+      <section id="cost-panel" class="status-panel"></section>
+    </aside>
+
+    <section class="timeline">
+      <header class="timeline-head">
+        <span id="count-label">No events yet. Paste an API key and hit Connect.</span>
+      </header>
+      <div id="event-list" class="event-list"></div>
+      <footer class="timeline-foot">
+        <button id="btn-more" class="hidden">Load more</button>
+      </footer>
+    </section>
+
+    <aside id="detail-panel" class="detail-panel hidden">
+      <header>
+        <strong>Event detail</strong>
+        <button id="btn-close-detail" class="close">×</button>
+      </header>
+      <div id="detail-body"></div>
+    </aside>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -872,7 +872,7 @@ def octopoda_memory_health(agent_id: str) -> dict:
 
 
 @mcp.tool()
-def octopoda_consolidate(agent_id: str, dry_run: bool = True) -> dict:
+def octopoda_consolidate(agent_id: str, dry_run: bool = False) -> dict:
     """Find and optionally merge duplicate memories. Duplicates degrade
     retrieval quality because similar but stale memories surface alongside
     current ones.

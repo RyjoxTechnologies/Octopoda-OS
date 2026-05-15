@@ -57,12 +57,12 @@ class MetricsCollector:
     # Keyed by tenant-scoped cache key to ensure strict tenant isolation.
     _metrics_cache: dict = {}
     _cache_lock = threading.Lock()
-    _CACHE_TTL = 15  # seconds — serve cached metrics if fresh enough
+    _CACHE_TTL = 90  # seconds — serve cached metrics if fresh enough
 
     # Background pre-computation
     _bg_thread: threading.Thread = None
     _bg_running = False
-    _BG_INTERVAL = 10  # seconds between background refreshes
+    _BG_INTERVAL = int(__import__("os").environ.get("OCTOPODA_METRICS_REFRESH_SEC", "60"))  # 60s default (was 10 — too aggressive)
 
     @classmethod
     def get_instance(cls, backend=None, tenant_id: str = None):
@@ -133,16 +133,15 @@ class MetricsCollector:
         except Exception:
             return
 
-        # Compute metrics for each agent and cache (tenant-scoped keys)
-        for agent_id in agent_ids:
-            try:
-                metrics = self._compute_agent_metrics(agent_id)
-                cache_key = self._cache_key(agent_id)
-                with MetricsCollector._cache_lock:
-                    MetricsCollector._metrics_cache[cache_key] = {
-                        "metrics": metrics, "timestamp": time.time()
-                    }
-            except Exception:
+        # Batch-refresh via get_metrics_batch (single tenant-wide query)
+        # instead of N+1 per-agent DB round-trips. 100 agents: ~3 queries
+        # instead of ~900.
+        if not agent_ids:
+            return
+        try:
+            _ = self.get_metrics_batch(list(agent_ids))
+            # get_metrics_batch already populates _metrics_cache internally
+        except Exception:
                 pass  # Keep existing cache entry if computation fails
 
     def get_all_cached_metrics(self) -> dict:
@@ -258,6 +257,174 @@ class MetricsCollector:
                 if cache_key in MetricsCollector._metrics_cache:
                     return MetricsCollector._metrics_cache[cache_key]["metrics"]
             return AgentMetrics(agent_id=agent_id)
+
+    def get_metrics_batch(self, agent_ids):
+        """Fetch metrics for many agents in ~3 DB queries instead of 9N.
+
+        Returns {agent_id: AgentMetrics}. Uses cache where fresh; falls
+        back to tenant-wide prefix queries for the miss set.
+        """
+        if not agent_ids:
+            return {}
+        now = time.time()
+        result = {}
+        miss_ids = []
+        # Cache hits first
+        with MetricsCollector._cache_lock:
+            for aid in agent_ids:
+                ck = self._cache_key(aid)
+                cached = MetricsCollector._metrics_cache.get(ck)
+                if cached and (now - cached["timestamp"]) < MetricsCollector._CACHE_TTL:
+                    result[aid] = cached["metrics"]
+                else:
+                    miss_ids.append(aid)
+
+        if not miss_ids:
+            return result
+
+        # Default metrics for every miss
+        for aid in miss_ids:
+            result[aid] = AgentMetrics(agent_id=aid)
+
+        try:
+            # ONE tenant-wide query per metric category. Each returns rows
+            # like `metrics:{aid}:{kind}:{ts}` which we bucket in Python.
+            miss_set = set(miss_ids)
+
+            def bucket(rows):
+                """Return {aid: [row, ...]} for rows belonging to miss_set."""
+                out = {}
+                for r in rows:
+                    name = r.get("key") or r.get("name") or ""
+                    # name = "metrics:<aid>:<kind>:<ts>"
+                    parts = name.split(":", 3)
+                    if len(parts) < 3:
+                        continue
+                    aid = parts[1]
+                    if aid in miss_set:
+                        out.setdefault(aid, []).append(r)
+                return out
+
+            # Tenant-wide category pulls (bounded to sensible sizes so
+            # pathological tenants don't blow up memory). If a tenant
+            # has > 50k per-category events the older ones are excluded.
+            writes = self.backend.query_prefix("metrics:", limit=50000)
+            # Since the query_prefix for "metrics:" is a SINGLE SQL call,
+            # we bucket and then sub-filter by the trailing subkind.
+            per_aid_all = bucket(writes)
+
+            memory = self.backend.query_prefix("agents:", limit=50000)
+            per_aid_mem = bucket(memory) if False else {}  # memory uses different prefix structure
+            # Correctly bucket memory rows:
+            mem_bucket = {}
+            for r in memory:
+                name = r.get("key") or r.get("name") or ""
+                parts = name.split(":", 2)  # "agents:<aid>:..."
+                if len(parts) >= 2 and parts[1] in miss_set:
+                    mem_bucket.setdefault(parts[1], 0)
+                    mem_bucket[parts[1]] += 1
+
+            # One tenant-wide SELECT for registered_at keys
+            reg_rows = self.backend.query_prefix("runtime:agents:", limit=50000)
+            reg_bucket = {}
+            for r in reg_rows:
+                name = r.get("key") or r.get("name") or ""
+                parts = name.split(":", 3)  # runtime:agents:<aid>:<field>
+                if len(parts) >= 4 and parts[2] in miss_set and parts[3] == "registered_at":
+                    data = r.get("data", {})
+                    val = data.get("value", data)
+                    if isinstance(val, dict):
+                        val = val.get("value")
+                    if isinstance(val, (int, float)) and val > 0:
+                        reg_bucket[parts[2]] = val
+
+            # Now compute per-agent metrics from buckets
+            cutoff_5min = now - 300
+            for aid in miss_ids:
+                m = result[aid]
+                rows = per_aid_all.get(aid, [])
+                # Split by kind based on 3rd segment
+                writes_a, reads_a, queries_a, crashes_a, recoveries_a, handoffs_a, snapshots_a = [], [], [], [], [], [], []
+                for r in rows:
+                    name = r.get("key") or r.get("name") or ""
+                    parts = name.split(":", 3)
+                    if len(parts) < 3: continue
+                    kind = parts[2]
+                    if   kind == "write":    writes_a.append(r)
+                    elif kind == "read":     reads_a.append(r)
+                    elif kind == "query":    queries_a.append(r)
+                    elif kind == "crash":    crashes_a.append(r)
+                    elif kind == "recovery": recoveries_a.append(r)
+                    elif kind == "handoff":  handoffs_a.append(r)
+                    elif kind == "snapshot": snapshots_a.append(r)
+
+                m.total_writes = len(writes_a)
+                m.total_reads = len(reads_a)
+                m.total_queries = len(queries_a)
+                m.total_operations = m.total_writes + m.total_reads + m.total_queries
+                m.crash_count = len(crashes_a)
+                m.recovery_count = len(recoveries_a)
+                m.handoffs_sent = len(handoffs_a)
+                m.snapshots = len(snapshots_a)
+
+                def avg_latency(items):
+                    lats = []
+                    for item in items:
+                        data = item.get("data", {})
+                        val = data.get("value", data)
+                        if isinstance(val, dict):
+                            lat = val.get("latency_us", 0)
+                            if lat:
+                                lats.append(lat)
+                    return sum(lats) / len(lats) if lats else 0.0
+
+                m.avg_write_latency_us = avg_latency(writes_a)
+                m.avg_read_latency_us = avg_latency(reads_a)
+                m.avg_query_latency_us = avg_latency(queries_a)
+
+                failed_writes = sum(1 for w in writes_a
+                                    if not self._extract_value(w).get("success", True))
+                failed_reads = sum(1 for r2 in reads_a
+                                   if not self._extract_value(r2).get("found", True))
+                total_ops = m.total_operations or 1
+                m.error_rate = (failed_writes + failed_reads) / total_ops
+
+                recovery_times = [self._extract_value(r2).get("recovery_time_us", 0)
+                                   for r2 in recoveries_a]
+                m.avg_recovery_time_us = sum(recovery_times) / len(recovery_times) if recovery_times else 0.0
+
+                m.memory_node_count = mem_bucket.get(aid, 0)
+
+                recent_ops = 0
+                for items in (writes_a, reads_a, queries_a):
+                    for item in items:
+                        ts = self._extract_value(item).get("timestamp", 0)
+                        if ts > cutoff_5min:
+                            recent_ops += 1
+                m.operations_per_minute = recent_ops / 5.0
+
+                reg_time = reg_bucket.get(aid)
+                if reg_time:
+                    m.uptime_seconds = now - reg_time
+
+                m.performance_score = self.calculate_performance_score(aid, m)
+
+                # Cache per-agent result
+                with MetricsCollector._cache_lock:
+                    MetricsCollector._metrics_cache[self._cache_key(aid)] = {
+                        "metrics": m, "timestamp": now,
+                    }
+        except Exception as e:
+            import sys as _sys
+            print(f"[metrics batch] fallback to per-agent due to: {e}",
+                  file=_sys.stderr)
+            # Safe fallback: return defaults (already populated) or call individually
+            for aid in miss_ids:
+                try:
+                    result[aid] = self._compute_agent_metrics(aid)
+                except Exception:
+                    pass
+        return result
 
     def _compute_agent_metrics(self, agent_id: str) -> AgentMetrics:
         """Actually compute metrics from backend queries."""

@@ -1993,18 +1993,23 @@ class AgentRuntime:
         )
 
     def _heartbeat_loop(self):
-        """Background heartbeat — writes to Synrix every 5 seconds."""
+        """Background heartbeat — writes to Synrix every 5 seconds.
+
+        Liveness pings use the ephemeral write path so we keep exactly one
+        row per key (vs. one per 5s × forever, which caused prod rows to
+        balloon to 200k+ per agent).
+        """
         while self._heartbeat_running:
             try:
                 now = time.time()
-                self.backend.write(
+                self.backend.write_ephemeral(
                     f"runtime:agents:{self.agent_id}:heartbeat",
-                    {"value": now},
+                    now,
                     metadata={"type": "heartbeat"}
                 )
-                self.backend.write(
+                self.backend.write_ephemeral(
                     f"runtime:agents:{self.agent_id}:last_active",
-                    {"value": now},
+                    now,
                     metadata={"type": "timestamp"}
                 )
             except Exception:

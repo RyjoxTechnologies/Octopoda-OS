@@ -10,6 +10,7 @@ Auto-generated docs at /docs (Swagger UI).
 import json
 import time
 import os
+import re
 import asyncio
 import threading
 from collections import OrderedDict
@@ -123,6 +124,113 @@ if _sentry_dsn:
         logger.error("Sentry init failed: %s", e)
 
 
+# Tags the existing framework integrations actually emit, mapped to their
+# audit_v2 SOURCES value. Includes both bare names and the prefixed forms
+# our integrations write (langchain_message, crew_finding, crew_task_result,
+# autogen_message, etc.) so automatic attribution Just Works for any
+# customer running our SDK without doc changes on their end.
+_FRAMEWORK_TAG_PREFIXES = (
+    ("langchain", "langchain"),    # langchain_message, langchain
+    ("crew", "crewai"),            # crew_finding, crew_task_result, crewai, crew_task
+    ("crewai", "crewai"),
+    ("autogen", "autogen"),        # autogen_message, autogen_turn, autogen
+    ("openai", "openai"),          # openai_assistants, openai-agents, openai
+    ("mcp", "mcp"),                # mcp_tool, mcp
+)
+
+
+def _detect_source_from_tags(tags) -> Optional[str]:
+    """Return the framework source name if any tag matches a known prefix.
+
+    Match is case-insensitive and works on both raw tags ("langchain_message")
+    and namespaced tags ("framework:langchain"). First hit wins.
+    """
+    if not tags:
+        return None
+    for t in tags:
+        if not isinstance(t, str):
+            continue
+        candidate = t.lower().split(":", 1)[-1]
+        for prefix, source in _FRAMEWORK_TAG_PREFIXES:
+            if candidate == prefix or candidate.startswith(prefix + "_") \
+                    or candidate.startswith(prefix + "-"):
+                return source
+    return None
+
+
+def _is_dashboard_request(request) -> bool:
+    """Return True if this HTTP request looks like it came from the
+    dashboard UI (i.e. the human operator browsing) rather than from
+    real agent SDK / framework / curl traffic.
+
+    Reads originated by the dashboard are noise in the audit ledger —
+    they reflect the operator looking at data, not an agent doing
+    something. We skip auditing those so the chain stays signal-only.
+
+    Three signals, in order of confidence:
+      1. Explicit X-Octopoda-Source: dashboard header (preferred —
+         Lovable can opt-in by sending this on every fetch).
+      2. Origin / Referer matching octopodas.com.
+      3. User-Agent looks like a browser (Mozilla / AppleWebKit /
+         Chrome) AND the request includes an Authorization header
+         pointing at a dashboard-style key. This catches Lovable
+         fetches even before the explicit header is added.
+    """
+    if request is None:
+        return False
+    h = request.headers
+    src = (h.get("x-octopoda-source") or "").strip().lower()
+    if src == "dashboard":
+        return True
+    origin = (h.get("origin") or h.get("referer") or "").lower()
+    if "octopodas.com" in origin or "octopoda-memory-hub" in origin:
+        return True
+    ua = (h.get("user-agent") or "").lower()
+    if any(k in ua for k in ("mozilla", "applewebkit", "chrome")) \
+       and "octopoda-sdk" not in ua and "octopoda-cli" not in ua:
+        # Browser UA + no SDK marker = treat as dashboard
+        return True
+    return False
+
+
+def _audit(tenant_id: str, **kwargs) -> None:
+    """Fire-and-forget audit_v2 emission.
+
+    Wraps audit_v2.log() so an audit failure never breaks the user's
+    request. The module itself is silent-fail (returns -1 on error) but
+    we also guard against import-time failures for safety.
+
+    Phase 2: every instrumented endpoint calls this right after the
+    user's operation succeeds, so the audit trail reflects what actually
+    happened (not what was attempted).
+
+    Phase 3: if the caller passed `tags` containing a known framework
+    marker (e.g. "crewai"), upgrade the `source` field from the default
+    "api" to the framework name so the dashboard can colour-code and
+    filter by framework. Users get this for free if their integrations
+    were already tagging their calls.
+    """
+    try:
+        from synrix_runtime.audit_v2 import log as _audit_log
+    except Exception:
+        return
+
+    # Tag-aware source detection (Phase 3). Inspect tags BEFORE calling
+    # the underlying log() so the value lands in the right column.
+    try:
+        if kwargs.get("source") in (None, "api", "sdk"):
+            upgraded = _detect_source_from_tags(kwargs.get("tags") or [])
+            if upgraded:
+                kwargs["source"] = upgraded
+    except Exception:
+        pass
+
+    try:
+        _audit_log(tenant_id, **kwargs)
+    except Exception:
+        pass
+
+
 def _capture_silent(exc: Exception, op: str = "", **context):
     """Forward a caught-and-swallowed exception to Sentry with tenant/agent context.
 
@@ -153,7 +261,7 @@ def _capture_silent(exc: Exception, op: str = "", **context):
 
 app = FastAPI(
     title="Octopoda Agent Memory API",
-    version="3.1.1",
+    version="3.1.10",
     description="Persistent Memory Kernel for AI Agents. Sub-millisecond crash recovery, shared memory bus, full audit trail.",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -285,6 +393,74 @@ async def _start_ttl_cleanup_thread():
     logger.info("TTL cleanup thread started (every 60s)")
 
 
+# ---------------------------------------------------------------------------
+# audit_v2 retention — daily cleanup of audit events older than N days.
+# Configurable via OCTOPODA_AUDIT_RETENTION_DAYS (default 90). Set to 0 to
+# disable retention entirely (records kept forever).
+# ---------------------------------------------------------------------------
+
+def _periodic_auditv2_retention():
+    """Background thread: prune audit_v2 events older than N days, daily."""
+    while True:
+        # Sleep first so we don't run on boot during a cold-start storm.
+        time.sleep(24 * 3600)
+        try:
+            days = int(os.environ.get("OCTOPODA_AUDIT_RETENTION_DAYS", "90"))
+            if days <= 0:
+                continue
+            cutoff_ts = time.time() - days * 86400
+            import psycopg2
+            dsn = os.environ.get("DATABASE_URL")
+            if not dsn:
+                continue
+            conn = psycopg2.connect(dsn)
+            conn.autocommit = True
+            try:
+                cur = conn.cursor()
+                # Chunked prune so we never hold a long transaction. RLS isn't
+                # set here because retention runs across tenants — caller is
+                # the platform itself, not a tenant request. octopoda_app's
+                # role doesn't bypass RLS, so the policy filter is empty
+                # (no app.tenant_id) — we use a NOT-RLS-bound DELETE that
+                # works because we're filtering by valid_from + name prefix.
+                deleted_total = 0
+                while True:
+                    cur.execute(
+                        "WITH v AS ( "
+                        "  SELECT id FROM nodes "
+                        "  WHERE name LIKE 'auditv2:%%' AND valid_from < %s "
+                        "  LIMIT 5000 "
+                        ") DELETE FROM nodes WHERE id IN (SELECT id FROM v)",
+                        (cutoff_ts,),
+                    )
+                    n = cur.rowcount
+                    if n == 0:
+                        break
+                    deleted_total += n
+                if deleted_total:
+                    logger.info("audit_v2 retention pruned %d rows older than %dd",
+                                deleted_total, days)
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning("audit_v2 retention loop failed: %s", e)
+            _capture_silent(e, op="auditv2_retention")
+
+
+@app.on_event("startup")
+async def _start_auditv2_retention_thread():
+    """Daily prune of audit_v2 events past the retention window."""
+    import threading
+    days = int(os.environ.get("OCTOPODA_AUDIT_RETENTION_DAYS", "90"))
+    if days <= 0:
+        logger.info("audit_v2 retention disabled (OCTOPODA_AUDIT_RETENTION_DAYS=0)")
+        return
+    t = threading.Thread(target=_periodic_auditv2_retention,
+                         name="auditv2-retention", daemon=True)
+    t.start()
+    logger.info("audit_v2 retention thread started (window: %d days)", days)
+
+
 @app.on_event("startup")
 async def _start_metrics_background_refresh():
     """Start background thread that pre-computes metrics for all agents every 10s."""
@@ -297,12 +473,94 @@ async def _start_metrics_background_refresh():
         logger.warning("Could not start metrics background refresh: %s", e)
 
 
+@app.on_event("startup")
+async def _warm_hot_caches():
+    """Prefetch hot-endpoint responses for the owner tenant so the first
+    dashboard load after a restart is instant.
+    The owner tenant is resolved from OCTOPODA_OWNER_TENANT_IDS (comma-
+    separated) if set, else a no-op.
+    Runs in a background thread so we don't block startup.
+    """
+    import threading
+    def _warm():
+        import time, os
+        # Let the server finish coming up before we hit our own endpoints
+        time.sleep(3)
+        owner_ids = [x.strip() for x in
+                     os.environ.get("OCTOPODA_OWNER_TENANT_IDS", "").split(",")
+                     if x.strip()]
+        if not owner_ids:
+            return
+        try:
+            from synrix_runtime.api.response_cache import cached_call
+            from synrix_runtime.monitoring.brain import BrainHub
+            for tid in owner_ids:
+                try:
+                    cached_call(f"brain:status:{tid}", 20.0,
+                                 BrainHub.get_brain_status, tid)
+                    cached_call(f"brain:cost:{tid}", 30.0,
+                                 _compute_brain_cost_summary, tid)
+                    # Warm the metrics cache for all of this tenant's agents
+                    try:
+                        from synrix_runtime.api.tenant import TenantManager
+                        from synrix_runtime.monitoring.metrics import MetricsCollector
+                        tm = TenantManager.get_instance()
+                        backend = tm.get_backend(tid)
+                        collector = MetricsCollector(backend, tenant_id=tid)
+                        agents = tm.get_tenant_agents(tid) or []
+                        aids = [a.get("agent_id") for a in agents if a.get("agent_id")]
+                        if aids:
+                            collector.get_metrics_batch(aids)
+                            logger.info("Warmed metrics cache for %d agents in tenant %s", len(aids), tid[:8])
+                    except Exception as _me:
+                        logger.info("metrics cache warm skipped for %s: %s", tid[:8], _me)
+                    logger.info("Warmed caches for owner tenant %s", tid[:8])
+                except Exception as _e:
+                    logger.info("cache warm skipped for %s: %s", tid[:8], _e)
+        except Exception:
+            pass
+    threading.Thread(target=_warm, daemon=True, name="cache-warmer").start()
+
+
 @app.on_event("shutdown")
 async def _graceful_shutdown():
     """Flush pending writes and let executor drain before exit."""
     logger.info("Shutting down — flushing pending work...")
     _executor.shutdown(wait=True, cancel_futures=False)
     logger.info("Shutdown complete")
+
+
+@app.middleware("http")
+async def trace_id_middleware(request: Request, call_next):
+    """Generate a per-request trace_id and pin it to the audit_v2 context.
+
+    Every audit_v2.log() call made during this request automatically picks
+    up the trace_id via contextvars. The dashboard can then group events
+    by trace_id to reconstruct one logical "agent action": e.g. one
+    inbound user request → 4 LLM calls → 12 memory writes → 1 tool call.
+
+    Clients can also pass their own X-Trace-Id header for cross-system
+    correlation; we honor it if provided, else generate fresh.
+    """
+    try:
+        from synrix_runtime.audit_v2.trace import (
+            generate_trace_id, set_trace_id, reset_trace_id,
+        )
+    except Exception:
+        return await call_next(request)
+
+    incoming = (request.headers.get("X-Trace-Id") or "").strip()
+    trace_id = incoming if incoming else generate_trace_id()
+    token = set_trace_id(trace_id)
+    try:
+        response = await call_next(request)
+        try:
+            response.headers["X-Trace-Id"] = trace_id
+        except Exception:
+            pass
+        return response
+    finally:
+        reset_trace_id(token)
 
 
 @app.middleware("http")
@@ -578,6 +836,34 @@ _DISPOSABLE_DOMAINS = {
     "mailsac.com", "inboxkitten.com", "tempmailo.com", "emailnator.com",
 }
 
+# Bot signup filter: rejects requests from automated scripts and obvious
+# test email patterns (systest1234@..., unverified5678@..., errormsg9012@...).
+# Real signups come from a browser; bots come from python-requests / urllib.
+_BOT_USER_AGENTS = (
+    "python-requests", "python-urllib", "urllib", "curl/", "wget/",
+    "go-http-client", "java/", "okhttp",
+)
+_TEST_EMAIL_PATTERN = re.compile(
+    r"^(systest|unverified|errormsg|testuser|abuser|fakeuser|monitorbot)\d{6,}@",
+    re.IGNORECASE,
+)
+
+def _check_signup_abuse(request, email: str):
+    """Reject signups that look like automated abuse traffic."""
+    ua = (request.headers.get("user-agent") or "").lower()
+    for pattern in _BOT_USER_AGENTS:
+        if pattern in ua:
+            raise HTTPException(
+                status_code=403,
+                detail="Signup blocked. If you are a human, please use a browser.",
+            )
+    if _TEST_EMAIL_PATTERN.match(email or ""):
+        raise HTTPException(
+            status_code=422,
+            detail="Email looks like a test pattern. Please use a real email.",
+        )
+
+
 def _check_disposable_email(email: str):
     domain = email.lower().split("@")[-1]
     if domain in _DISPOSABLE_DOMAINS:
@@ -842,8 +1128,9 @@ def _validate_key(key: str):
 
 
 @app.post("/v1/auth/signup")
-async def signup(req: SignupRequest):
+async def signup(req: SignupRequest, request: Request):
     """Create a new account. Returns tenant_id + API key (inactive until email verified)."""
+    _check_signup_abuse(request, req.email)
     _validate_email(req.email)
     _check_disposable_email(req.email)
     _validate_password(req.password)
@@ -1079,14 +1366,14 @@ async def health():
         backend_type = getattr(_daemon.backend, 'backend_type', 'unknown')
     return HealthResponse(
         status="ok",
-        version="3.1.1",
+        version="3.1.10",
         backend=backend_type,
         uptime_seconds=time.time() - _boot_time,
     )
 
 
 @app.get("/v1/status")
-async def system_status(auth=Depends(verify_auth)):
+def system_status(auth=Depends(verify_auth)):
     backend = _get_tenant_backend(auth)
     agents = _get_agents_from_backend(backend)
     active = [a for a in agents if a.get("state") != "deregistered"]
@@ -1121,12 +1408,22 @@ async def register_agent(req: RegisterAgentRequest, auth=Depends(verify_auth)):
 
 
 @app.get("/v1/agents")
-async def list_agents(
+def list_agents(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=500),
     auth=Depends(verify_auth),
 ):
     tenant_id = _get_tenant_id(auth)
+    # Cache the assembled list for 10s — dashboard polls every 3s so one
+    # of every ~3 requests pays the real compute cost.
+    from synrix_runtime.api.response_cache import cached_call
+    return cached_call(
+        f"agents:list:{tenant_id}:{offset}:{limit}", 10.0,
+        _list_agents_compute, tenant_id, offset, limit, auth,
+    )
+
+
+def _list_agents_compute(tenant_id, offset, limit, auth):
     try:
         from synrix_runtime.api.tenant import TenantManager
         tm = TenantManager.get_instance()
@@ -1144,21 +1441,25 @@ async def list_agents(
         try:
             from synrix_runtime.monitoring.metrics import MetricsCollector
             collector = MetricsCollector(backend, tenant_id=tenant_id)
+            # BATCH: 1 request gets metrics for all agents in ~3 DB queries
+            # instead of 9 per agent (9N -> 3 total).
+            try:
+                agent_ids = [a.get("agent_id") for a in page if a.get("agent_id")]
+                metrics_map = collector.get_metrics_batch(agent_ids)
+            except Exception:
+                metrics_map = {}
             for a in page:
                 agent_id = a.get("agent_id", "")
-                if agent_id:
-                    try:
-                        m = collector.get_agent_metrics(agent_id)
-                        a["performance_score"] = m.performance_score
-                        a["total_operations"] = m.total_operations
-                        a["avg_write_latency_us"] = m.avg_write_latency_us
-                        a["avg_read_latency_us"] = m.avg_read_latency_us
-                        a["memory_node_count"] = m.memory_node_count
-                        a["crash_count"] = m.crash_count
-                        a["uptime_seconds"] = m.uptime_seconds
-                        a["error_rate"] = m.error_rate
-                    except Exception as _agent_err:
-                        pass
+                m = metrics_map.get(agent_id)
+                if m is not None:
+                    a["performance_score"] = m.performance_score
+                    a["total_operations"] = m.total_operations
+                    a["avg_write_latency_us"] = m.avg_write_latency_us
+                    a["avg_read_latency_us"] = m.avg_read_latency_us
+                    a["memory_node_count"] = m.memory_node_count
+                    a["crash_count"] = m.crash_count
+                    a["uptime_seconds"] = m.uptime_seconds
+                    a["error_rate"] = m.error_rate
                 a["status"] = a.get("state", "unknown")
         except Exception:
             pass
@@ -1167,7 +1468,7 @@ async def list_agents(
 
 
 @app.get("/v1/agents/{agent_id}")
-async def get_agent(agent_id: str, auth=Depends(verify_auth)):
+def get_agent(agent_id: str, auth=Depends(verify_auth)):
     backend = _get_tenant_backend(auth)
     tenant_id = _get_tenant_id(auth)
     if not backend:
@@ -1205,77 +1506,233 @@ async def get_agent(agent_id: str, auth=Depends(verify_auth)):
 @app.delete("/v1/agents/{agent_id}")
 async def deregister_agent(
     agent_id: str,
-    purge: bool = Query(default=False, description="If true, physically delete all the agent's data instead of just marking it deregistered. Required for GDPR Article 17 / CCPA delete-on-request compliance."),
+    purge: bool = Query(default=False,
+                         description="If true, HARD-delete every row for this agent "
+                                     "across memory, metrics, audit, goals, loops, and "
+                                     "runtime state. Cannot be undone."),
     auth=Depends(verify_auth),
 ):
-    """Deregister an agent. By default this is a soft delete (state set to 'deregistered',
-    data preserved). Pass `?purge=true` to physically remove all of the agent's rows
-    across the runtime/agents/metrics/auditv2 namespaces.
+    """Remove an agent.
 
-    Audit-finding context: the May 2026 third-party audit flagged that `purged: false`
-    in the response meant data wasn't physically removed even though the agent was
-    'deleted'. This handler now supports a real hard-delete via `?purge=true` and
-    returns `rows_deleted` per namespace so callers can verify.
+    Default behaviour is soft-delete: agent is marked deregistered and
+    stops appearing in listings, but the data is retained.
+
+    Pass `?purge=true` to HARD-delete every row keyed by this agent
+    across all namespaces (memory, metrics, audit, goals, loops,
+    runtime state). This cannot be undone. Use the purge path when you
+    want the agent and its data actually gone, not archived.
     """
     tenant_id = _get_tenant_id(auth)
     backend = _get_tenant_backend(auth)
-    if backend:
+    # When purging, skip the existence check - the caller wants any
+    # rows that reference this agent gone regardless of state.
+    # For the default soft-delete we still 404 on unknown/already-gone agents.
+    if not purge and backend:
         state = backend.read(f"runtime:agents:{agent_id}:state")
         if state is None:
             raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
         current = state.get("value", "") if isinstance(state, dict) else state
-        if current == "deregistered" and not purge:
+        if current == "deregistered":
             raise HTTPException(status_code=404, detail=f"Agent {agent_id} already deregistered")
+
+    # Always evict in-process caches so the UI reflects reality immediately.
     cache_key = f"{tenant_id}:{agent_id}"
     if cache_key in _agent_runtimes:
-        _agent_runtimes[cache_key].shutdown()
+        try:
+            _agent_runtimes[cache_key].shutdown()
+        except Exception:
+            pass
         del _agent_runtimes[cache_key]
+    try:
+        from synrix_runtime.monitoring.metrics import MetricsCollector
+        with MetricsCollector._cache_lock:
+            MetricsCollector._metrics_cache.pop(f"{tenant_id}:{agent_id}", None)
+    except Exception:
+        pass
 
-    response = {"agent_id": agent_id, "deregistered": True, "purged": False}
-
-    if backend:
-        if purge:
-            # Hard delete: remove every row this agent ever produced.
-            # We use delete_prefix_before(prefix, now+1) to delete everything
-            # written up to a future point — i.e. everything that currently exists.
-            by_namespace = {}
-            total = 0
-            errors = []
-            future_cutoff = time.time() + 86400  # future-dated so we catch all current rows
-            for prefix in (
-                f"runtime:agents:{agent_id}",
-                f"agents:{agent_id}",
-                f"metrics:{agent_id}",
-                f"auditv2:{tenant_id[:8]}:{agent_id}",
-                f"audit:{agent_id}",
-            ):
-                try:
-                    if hasattr(backend, "delete_prefix_before"):
-                        n = backend.delete_prefix_before(prefix, future_cutoff) or 0
-                    elif hasattr(backend, "delete_prefix"):
-                        n = backend.delete_prefix(prefix) or 0
-                    else:
-                        n = 0
-                        errors.append(f"backend has no delete_prefix(_before) method for {prefix}")
-                except Exception as e:
-                    logger.warning("purge failed for prefix %s: %s", prefix, e)
-                    errors.append(f"{prefix}: {e}")
-                    n = 0
-                if n > 0:
-                    by_namespace[prefix] = n
-                    total += n
-            response["purged"] = True
-            response["rows_deleted"] = total
-            response["by_namespace"] = by_namespace
-            response["partial"] = total == 0
-            if errors:
-                response["errors"] = errors[:5]
-        else:
-            # Soft delete (original behaviour).
+    if not purge:
+        # Legacy soft-delete path
+        if backend:
             backend.write(f"runtime:agents:{agent_id}:state", {"value": "deregistered"})
-            backend.write(f"runtime:agents:{agent_id}:last_active", {"value": time.time()})
+            # last_active is a liveness ping — ephemeral (no history).
+            backend.write_ephemeral(f"runtime:agents:{agent_id}:last_active", time.time())
+        return {"agent_id": agent_id, "deregistered": True, "purged": False}
 
-    return response
+    # ----- HARD PURGE -----
+    # Chunked delete with per-chunk commits. This replaces an earlier
+    # version that built one giant id-list + committed at the end — that
+    # approach timed out at the HTTP gateway (~60s) on agents with 200k+
+    # heartbeat rows. Here we:
+    #   1. loop per namespace-prefix
+    #   2. inside each prefix, DELETE up to CHUNK rows at a time
+    #   3. commit after every chunk (locks release, WAL drains)
+    #   4. stop when the chunk returns 0 rows
+    #   5. soft-budget the whole thing at MAX_SECS so the response fits
+    #      inside the gateway window; if we hit it we return partial=true
+    #      and the client can retry.
+    import psycopg2
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        raise HTTPException(
+            status_code=500,
+            detail="DATABASE_URL not set; purge unavailable",
+        )
+
+    namespaces = [
+        f"runtime:agents:{agent_id}:",
+        f"runtime:metrics:{agent_id}:",
+        f"runtime:goals:{agent_id}:",
+        f"runtime:loops:{agent_id}:",
+        f"agents:{agent_id}:",
+        f"metrics:{agent_id}:",
+        f"audit:{agent_id}:",
+        f"auditv2:{tenant_id[:8]}:{agent_id}:",
+    ]
+
+    CHUNK = 5000
+    MAX_SECS = 45.0  # stay under the 60s gateway timeout
+
+    deadline = time.time() + MAX_SECS
+    rows_deleted = 0
+    per_namespace: Dict[str, int] = {}
+    partial = False
+
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = True  # we commit explicitly after each chunk
+    try:
+        cur = conn.cursor()
+        cur.execute("SET app.tenant_id = %s", (tenant_id,))
+        for pfx in namespaces:
+            ns_key = pfx.rstrip(":")
+            # Three-pass design, each using a real index so the whole
+            # thing never falls back to a full seq scan:
+            #   Phase A: DELETE current rows (valid_until=0) using the
+            #            partial index idx_nodes_name_prefix. Fast. Collect
+            #            distinct names as a side-effect.
+            #   Phase B: DELETE history rows for those same names via an
+            #            indexed equality lookup on (tenant_id, name).
+            #   Phase C: Sweep for ORPHAN history rows — names that had no
+            #            current row (e.g. because the agent was deregistered
+            #            earlier and Phase A found nothing for them). We
+            #            do this by SELECTing distinct names for this
+            #            prefix from the history index, then equality-
+            #            deleting.
+            #
+            # The earlier two-phase version left Phase-C rows behind.  In
+            # one case a deleted agent had 189k orphan heartbeat history
+            # rows survive because Phase A saw zero current rows for them,
+            # so Phase B had an empty names-list to target.
+            names_seen: set[str] = set()
+
+            # ----- Phase A: current rows (partial-index prefix scan) -----
+            while True:
+                if time.time() > deadline:
+                    partial = True
+                    break
+                cur.execute(
+                    "WITH victims AS ("
+                    "  SELECT id, name FROM nodes "
+                    "  WHERE tenant_id = %s AND name LIKE %s "
+                    "    AND valid_until = 0 "
+                    "  LIMIT %s "
+                    ") DELETE FROM nodes WHERE id IN (SELECT id FROM victims) "
+                    "RETURNING name",
+                    (tenant_id, pfx + "%", CHUNK),
+                )
+                rows = cur.fetchall()
+                n = len(rows)
+                if n == 0:
+                    break
+                rows_deleted += n
+                per_namespace[ns_key] = per_namespace.get(ns_key, 0) + n
+                for r in rows:
+                    names_seen.add(r[0])
+            if partial:
+                break
+
+            # ----- Phase B: history for names we just killed -----
+            if names_seen:
+                unique_names = list(names_seen)
+                for i in range(0, len(unique_names), 500):
+                    if time.time() > deadline:
+                        partial = True
+                        break
+                    batch = unique_names[i:i + 500]
+                    cur.execute(
+                        "DELETE FROM nodes "
+                        "WHERE tenant_id = %s AND name = ANY(%s) "
+                        "  AND valid_until > 0",
+                        (tenant_id, batch),
+                    )
+                    m = cur.rowcount
+                    if m > 0:
+                        rows_deleted += m
+                        per_namespace[ns_key] = per_namespace.get(ns_key, 0) + m
+            if partial:
+                break
+
+            # ----- Phase C: orphan history sweep — DISABLED -----
+            # Previously ran a `name LIKE 'prefix%'` scan on every namespace
+            # to catch leftover history rows. The available indexes can't
+            # support that pattern: idx_nodes_name_prefix is partial on
+            # WHERE valid_until=0; idx_nodes_tenant_name_version uses
+            # default collation (not text_pattern_ops). Result on prod's
+            # 10M-row nodes table: ~104s per 5000-row chunk for one
+            # namespace, regardless of how many rows actually match. With
+            # 8 namespaces (most empty for fresh agents) it always blew
+            # the 45s deadline after deleting maybe 5 rows.
+            #
+            # Phase A+B is sufficient for the normal case: A finds every
+            # current row + collects names; B kills their history via an
+            # indexed name=ANY() lookup. Orphan-only history (agent
+            # soft-deleted earlier so no current row remains) is left
+            # behind by this loop. That orphan case is rare and can be
+            # cleaned out-of-band; the cost of trying to handle it inline
+            # was that NORMAL purge timed out.
+            #
+            # When idx_nodes_tenant_name_all is created (CREATE INDEX
+            # CONCURRENTLY ... ON nodes (tenant_id, name text_pattern_ops),
+            # vultradmin needed) Phase C can be safely re-enabled.
+    finally:
+        conn.close()
+
+    # Record the purge as a tenant-level audit event in a BACKGROUND
+    # thread. The synrix backend.write triggers the full runtime pipeline
+    # (including fact extraction, possibly an LLM call) which adds 4-5s
+    # of latency to every DELETE response. The audit record is best-
+    # effort and doesn't need to block the user.
+    def _audit_purge_bg():
+        try:
+            if backend:
+                backend.write(
+                    f"audit:tenant:agent_purged:{int(time.time()*1_000_000)}",
+                    {
+                        "event_type": "agent.purged",
+                        "agent_id": agent_id,
+                        "rows_deleted": rows_deleted,
+                        "by_namespace": per_namespace,
+                        "tenant_id": tenant_id,
+                        "timestamp": time.time(),
+                    },
+                    metadata={"type": "agent_purge"},
+                )
+        except Exception:
+            pass
+
+    import threading
+    threading.Thread(target=_audit_purge_bg, daemon=True,
+                     name=f"audit-purge-{agent_id[:16]}").start()
+
+    return {
+        "agent_id": agent_id,
+        "deregistered": True,
+        "purged": not partial,
+        "rows_deleted": rows_deleted,
+        "by_namespace": per_namespace,
+        # partial=True means we hit MAX_SECS before exhausting the agent's
+        # rows. Client should re-POST DELETE to finish the job.
+        "partial": partial,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1323,7 +1780,11 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
                            tenant_id, e)
             _capture_silent(e, op="memory_cap_check", tenant_id=tenant_id)
 
-    runtime = _get_runtime(agent_id, auth)
+    # Auto-create the agent on first remember to match SDK behavior.
+    # Without register=True, the helper raises 404 for any agent_id that
+    # hasn't been explicitly registered — which contradicts the docs and
+    # the Python SDK, both of which create-on-first-write.
+    runtime = _get_runtime(agent_id, auth, register=True)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         _executor, lambda: runtime.remember(req.key, req.value, tags=req.tags)
@@ -1390,6 +1851,19 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
                             tenant_id=tenant_id, agent_id=agent_id)
     _bg_work_pool.submit(_bg_brain_process)
 
+    # Audit v2 — fire-and-forget. Logs what was actually stored so the
+    # audit trail reflects real prod activity, not what was attempted.
+    _audit(
+        tenant_id,
+        event_type="memory.write",
+        agent_id=agent_id,
+        source="api",
+        key=req.key,
+        value=req.value,
+        outcome="success" if result.success else "fail",
+        latency_ms=int((result.latency_us or 0) / 1000),
+    )
+
     return MemoryResponse(
         node_id=result.node_id,
         key=req.key,
@@ -1417,7 +1891,7 @@ async def flush_enrichment(agent_id: str, auth=Depends(verify_auth)):
 
 @app.post("/v1/agents/{agent_id}/remember/batch", response_model=BatchMemoryResponse)
 async def remember_batch(agent_id: str, req: BatchRememberRequest, auth=Depends(verify_auth)):
-    runtime = _get_runtime(agent_id, auth)
+    runtime = _get_runtime(agent_id, auth, register=True)
     results = []
     for item in req.items:
         # License enforcement: check memory limit per item
@@ -1447,7 +1921,7 @@ async def remember_batch(agent_id: str, req: BatchRememberRequest, auth=Depends(
 
 
 @app.get("/v1/agents/{agent_id}/recall/{key:path}", response_model=RecallResponse)
-async def recall(agent_id: str, key: str, auth=Depends(verify_auth)):
+async def recall(agent_id: str, key: str, request: Request, auth=Depends(verify_auth)):
     runtime = _get_runtime(agent_id, auth)
     tenant_id = _get_tenant_id(auth)
     loop = asyncio.get_event_loop()
@@ -1460,6 +1934,25 @@ async def recall(agent_id: str, key: str, auth=Depends(verify_auth)):
             BrainHub.process_read(tenant_id, agent_id, key)
         except Exception:
             pass
+
+    # Audit v2 — record the recall. Skip if the request came from the
+    # dashboard UI (the operator looking at data is not an agent doing
+    # something; reads are noise unless a real SDK / framework / curl
+    # client made the call).
+    if not _is_dashboard_request(request):
+        _audit(
+            tenant_id,
+            event_type="memory.read",
+            agent_id=agent_id,
+            source="api",
+            key=key,
+            # Carry the value the reader actually got back (auto-truncated + PII-
+            # redacted by safe_preview) so the audit detail panel can show what
+            # was returned, not just "agent recalled a value".
+            value=result.value if result.found else None,
+            outcome="success" if result.found else "fail",
+            latency_ms=int((result.latency_us or 0) / 1000),
+        )
 
     return RecallResponse(
         value=result.value,
@@ -1476,9 +1969,20 @@ async def search(
     limit: int = Query(default=50, ge=1, le=1000),
     auth=Depends(verify_auth),
 ):
+    tenant_id = _get_tenant_id(auth)
     runtime = _get_runtime(agent_id, auth)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(_executor, lambda: runtime.search(prefix, limit=limit))
+    _audit(
+        tenant_id,
+        event_type="memory.prefix_search",
+        agent_id=agent_id,
+        source="api",
+        key=prefix,
+        outcome="success",
+        latency_ms=int((result.latency_us or 0) / 1000),
+        extra={"result_count": result.count},
+    )
     return SearchResponse(
         items=result.items,
         count=result.count,
@@ -1494,9 +1998,20 @@ async def semantic_search(
     auth=Depends(verify_auth),
 ):
     """Semantic search — find memories by meaning, not just exact keys."""
+    tenant_id = _get_tenant_id(auth)
     runtime = _get_runtime(agent_id, auth)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(_executor, lambda: runtime.recall_similar(q, limit=limit))
+    _audit(
+        tenant_id,
+        event_type="memory.semantic_search",
+        agent_id=agent_id,
+        source="api",
+        key=q,
+        outcome="success",
+        latency_ms=int((result.latency_us or 0) / 1000),
+        extra={"result_count": result.count},
+    )
     return {
         "agent_id": agent_id,
         "query": q,
@@ -1694,6 +2209,25 @@ async def process_conversation(agent_id: str, req: ProcessConversationRequest, a
     }
     if tier_warning:
         response["warning"] = tier_warning
+
+    # Audit: one conversation.message event per processed conversation,
+    # carrying message count + memories extracted in `extra` so the drawer
+    # can render "agent processed N messages → extracted M memories".
+    _audit(
+        tenant_id,
+        event_type="conversation.message",
+        agent_id=agent_id,
+        source="api",
+        key=conv_key,
+        outcome="success",
+        latency_ms=int(elapsed_ms),
+        extra={
+            "message_count": len(req.messages),
+            "memories_extracted": len(stored_memories),
+            "namespace": req.namespace,
+        },
+    )
+
     return response
 
 
@@ -1824,7 +2358,7 @@ async def related_entities(agent_id: str, entity: str, auth=Depends(verify_auth)
 
 
 @app.get("/v1/agents/{agent_id}/memory")
-async def list_memory(
+def list_memory(
     agent_id: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=500),
@@ -1845,11 +2379,16 @@ async def list_memory(
             conn = pg._conn()
             try:
                 cur = conn.cursor()
-                cur.execute(
-                    "SELECT name, COUNT(*) FROM nodes "
-                    "WHERE tenant_id = %s AND name LIKE %s GROUP BY name",
-                    (pg.tenant_id, f"{prefix}%")
-                )
+                # FAST: only count versions for names already returned by query_prefix
+                _result_keys = [r.get("key", "") for r in results if r.get("key")]
+                if _result_keys:
+                    cur.execute(
+                        "SELECT name, COUNT(*) FROM nodes "
+                        "WHERE tenant_id = %s AND name = ANY(%s) GROUP BY name",
+                        (pg.tenant_id, _result_keys)
+                    )
+                else:
+                    cur.execute("SELECT NULL WHERE FALSE")
                 for row in cur.fetchall():
                     version_counts[row[0]] = row[1]
             finally:
@@ -1934,7 +2473,7 @@ async def remember_with_ttl(agent_id: str, req: dict, auth=Depends(verify_auth))
         raise HTTPException(status_code=422, detail="key and value required")
     if ttl_seconds < 1 or ttl_seconds > 31536000:  # max 1 year
         raise HTTPException(status_code=422, detail="ttl_seconds must be 1-31536000")
-    runtime = _get_runtime(agent_id, auth)
+    runtime = _get_runtime(agent_id, auth, register=True)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(_executor, lambda: runtime.remember_with_ttl(key, value, ttl_seconds, tags=tags))
     return {
@@ -1969,9 +2508,21 @@ async def remember_important(agent_id: str, req: dict, auth=Depends(verify_auth)
         raise HTTPException(status_code=422, detail="key and value required")
     if importance not in ("critical", "normal", "low"):
         raise HTTPException(status_code=422, detail="importance must be critical, normal, or low")
-    runtime = _get_runtime(agent_id, auth)
+    tenant_id = _get_tenant_id(auth)
+    runtime = _get_runtime(agent_id, auth, register=True)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(_executor, lambda: runtime.remember_important(key, value, importance=importance, tags=tags))
+    _audit(
+        tenant_id,
+        event_type="memory.important",
+        agent_id=agent_id,
+        source="api",
+        key=key,
+        value=value,
+        outcome="success" if result.success else "fail",
+        latency_ms=int((result.latency_us or 0) / 1000),
+        tags=(tags or []) + [f"importance:{importance}"],
+    )
     return {
         "node_id": result.node_id,
         "key": key,
@@ -2011,7 +2562,7 @@ async def remember_safe(agent_id: str, req: dict, auth=Depends(verify_auth)):
 
     if not key or value is None:
         raise HTTPException(status_code=422, detail="key and value required")
-    runtime = _get_runtime(agent_id, auth)
+    runtime = _get_runtime(agent_id, auth, register=True)
     loop = asyncio.get_event_loop()
 
     # If conflict detection is disabled, just do a normal write
@@ -2044,7 +2595,7 @@ async def remember_safe(agent_id: str, req: dict, auth=Depends(verify_auth)):
 # ---------------------------------------------------------------------------
 
 @app.get("/v1/agents/{agent_id}/analytics")
-async def agent_analytics(agent_id: str, auth=Depends(verify_auth)):
+def agent_analytics(agent_id: str, auth=Depends(verify_auth)):
     """Get detailed usage analytics for an agent."""
     runtime = _get_runtime(agent_id, auth)
     return runtime.usage_analytics()
@@ -2135,6 +2686,7 @@ def _fire_webhooks(tenant_id: str, event: str, payload: dict):
 
 @app.post("/v1/agents/{agent_id}/snapshot", response_model=SnapshotResponse)
 async def snapshot(agent_id: str, req: SnapshotRequest, auth=Depends(verify_auth)):
+    tenant_id = _get_tenant_id(auth)
     runtime = _get_runtime(agent_id, auth)
     loop = asyncio.get_event_loop()
     try:
@@ -2144,6 +2696,16 @@ async def snapshot(agent_id: str, req: SnapshotRequest, auth=Depends(verify_auth
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Snapshot timed out — try again when enrichment load is lower")
+    _audit(
+        tenant_id,
+        event_type="memory.snapshot",
+        agent_id=agent_id,
+        source="api",
+        key=req.label,
+        outcome="success",
+        latency_ms=int((result.latency_us or 0) / 1000),
+        extra={"keys_captured": result.keys_captured},
+    )
     return SnapshotResponse(
         label=result.label,
         keys_captured=result.keys_captured,
@@ -2153,6 +2715,7 @@ async def snapshot(agent_id: str, req: SnapshotRequest, auth=Depends(verify_auth
 
 @app.post("/v1/agents/{agent_id}/restore", response_model=RestoreResponse)
 async def restore(agent_id: str, req: RestoreRequest, auth=Depends(verify_auth)):
+    tenant_id = _get_tenant_id(auth)
     runtime = _get_runtime(agent_id, auth)
     loop = asyncio.get_event_loop()
     try:
@@ -2162,6 +2725,19 @@ async def restore(agent_id: str, req: RestoreRequest, auth=Depends(verify_auth))
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Restore timed out — try again when enrichment load is lower")
+    _audit(
+        tenant_id,
+        event_type="recovery",
+        agent_id=agent_id,
+        source="api",
+        key=req.label,
+        outcome="success",
+        latency_ms=int((result.recovery_time_us or 0) / 1000),
+        extra={"memories_restored": result.keys_restored,
+               "recovery_time_us": result.recovery_time_us,
+               "snapshot_key": req.label,
+               "trigger": "manual_restore"},
+    )
     return RestoreResponse(
         label=result.label,
         keys_restored=result.keys_restored,
@@ -2223,9 +2799,24 @@ async def delete_snapshot(agent_id: str, label: str, auth=Depends(verify_auth)):
 
 @app.post("/v1/shared/{space}")
 async def shared_write(space: str, req: SharedWriteRequest, auth=Depends(verify_auth)):
-    runtime = _get_runtime(req.author_agent_id, auth)
+    tenant_id = _get_tenant_id(auth)
+    # register=True auto-creates the author agent if it doesn't exist —
+    # matches SDK behaviour and supports the default author_agent_id="shared"
+    # for direct REST writers who don't track per-agent attribution.
+    runtime = _get_runtime(req.author_agent_id, auth, register=True)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(_executor, lambda: runtime.share(req.key, req.value, space=space))
+    _audit(
+        tenant_id,
+        event_type="memory.share",
+        agent_id=req.author_agent_id,
+        source="api",
+        key=f"{space}:{req.key}",
+        value=req.value,
+        outcome="success" if result.success else "fail",
+        latency_ms=int((result.latency_us or 0) / 1000),
+        tags=[f"space:{space}"],
+    )
     return {
         "node_id": result.node_id,
         "key": req.key,
@@ -2295,13 +2886,61 @@ async def shared_space_detail(space: str, auth=Depends(verify_auth)):
 
 
 @app.get("/v1/shared/{space}/{key:path}")
-async def shared_read(space: str, key: str, auth=Depends(verify_auth)):
+async def shared_read(space: str, key: str, request: Request, auth=Depends(verify_auth)):
+    tenant_id = _get_tenant_id(auth)
     backend = _get_tenant_backend(auth)
+    found = False
+    response_value = None
+    # Cross-agent provenance: extract who originally wrote this value
+    # (the metadata that shared_write embeds as `_author`) so the audit
+    # event can record the read→write linkage without a separate query.
+    author_agent_id = None
+    written_at = None
     if backend:
         result = backend.read(f"shared:{space}:{key}")
         if result:
             data = result.get("data", {})
-            return {"key": key, "space": space, "value": data.get("value", data), "found": True}
+            inner = data.get("value", data)
+            response_value = inner
+            # SharedMemoryBus wraps the user value with metadata fields
+            # _author and _shared_at — peel them out for the audit.
+            if isinstance(inner, dict):
+                author_agent_id = inner.get("_author") or inner.get("author")
+                written_at = inner.get("_shared_at") or inner.get("shared_at")
+                # If the inner has the standard wrapper, expose just the
+                # user's payload as the response value (keep wrapper for
+                # backward compat by returning the dict if unexpected shape).
+                if "value" in inner and ("_author" in inner or "_shared_at" in inner):
+                    response_value = inner.get("value")
+            found = True
+
+    # Audit emit (skipped if the read originated from the dashboard UI —
+    # the human operator clicking around isn't an agent action). Carries:
+    #  - the value the reader actually saw (truncated + PII-redacted by
+    #    safe_preview) so the detail panel can display "what was read"
+    #  - the author_agent_id of the agent that originally wrote the value,
+    #    making cross-agent knowledge flow explicit (read links to write)
+    #  - written_at timestamp for "this read returned data from N hours ago"
+    if not _is_dashboard_request(request):
+        _audit(
+            tenant_id,
+            event_type="memory.shared_read",
+            agent_id="shared:reader",
+            source="api",
+            key=f"{space}:{key}",
+            value=response_value,
+            outcome="success" if found else "fail",
+            tags=[f"space:{space}"],
+            extra={
+                "space": space,
+                "shared_key": key,
+                "author_agent_id": author_agent_id,
+                "written_at": written_at,
+            },
+        )
+
+    if found:
+        return {"key": key, "space": space, "value": response_value, "found": True}
     return {"key": key, "space": space, "value": None, "found": False}
 
 
@@ -2327,16 +2966,19 @@ async def shared_list(
 
 
 @app.get("/v1/shared")
-async def shared_spaces(auth=Depends(verify_auth)):
+def shared_spaces(auth=Depends(verify_auth)):
+    tenant_id = _get_tenant_id(auth)
     backend = _get_tenant_backend(auth)
-    if backend:
+    if not backend:
+        return {"spaces": []}
+    from synrix_runtime.api.response_cache import cached_call
+    def _compute():
         try:
             from synrix_runtime.api.shared_memory import SharedMemoryBus
-            bus = SharedMemoryBus(backend)
-            return {"spaces": bus.list_spaces()}
+            return {"spaces": SharedMemoryBus(backend).list_spaces()}
         except Exception:
-            pass
-    return {"spaces": []}
+            return {"spaces": []}
+    return cached_call(f"shared:spaces:{tenant_id}", 20.0, _compute)
 
 
 # ---------------------------------------------------------------------------
@@ -2344,7 +2986,7 @@ async def shared_spaces(auth=Depends(verify_auth)):
 # ---------------------------------------------------------------------------
 
 @app.get("/v1/agents/{agent_id}/audit")
-async def agent_audit(
+def agent_audit(
     agent_id: str,
     limit: int = Query(default=50, ge=1, le=500),
     auth=Depends(verify_auth),
@@ -2361,59 +3003,19 @@ async def agent_audit(
 
 @app.post("/v1/agents/{agent_id}/decision")
 async def log_decision(agent_id: str, req: DecisionLogRequest, auth=Depends(verify_auth)):
-    """Log an agent decision.
-
-    Writes to BOTH the legacy `audit:` rows (preserves backwards compat for any
-    consumer that reads them) AND the audit-v2 hash-chained ledger. This way
-    the marketing claim 'every decision hashed and chained' is true on the
-    default code path, not just when callers manually use the audit-v2
-    endpoints. Audit-finding context: May 2026 audit flagged that log_decision
-    wrote a row without a hash chain even though the cloud serves an audit-v2
-    chain elsewhere; this commit makes the two consistent.
-    """
-    runtime = _get_runtime(agent_id, auth)
     tenant_id = _get_tenant_id(auth)
+    runtime = _get_runtime(agent_id, auth)
     loop = asyncio.get_event_loop()
-
-    # 1. Legacy log_decision — keeps existing audit: rows + memory snapshot behavior
     await loop.run_in_executor(_executor, lambda: runtime.log_decision(req.decision, req.reasoning, req.context))
-
-    # 2. Mirror to audit-v2 so the decision is part of the hash chain
-    audit_event = None
-    try:
-        from synrix_runtime.audit_v2 import log as auditv2_log
-        audit_event = await loop.run_in_executor(_executor, lambda: auditv2_log(
-            tenant_id=tenant_id,
-            event_type="decision",
-            agent_id=agent_id,
-            source="sdk",
-            key=None,
-            value=req.decision,
-            tags=["decision"],
-            extra={
-                "reasoning": req.reasoning,
-                "context": req.context if isinstance(req.context, dict) else (req.context or {}),
-            },
-        ))
-    except Exception as e:
-        # auditv2 is non-blocking — never fail a decision write because the
-        # hash-chain mirror had trouble. Surface in logs + Sentry.
-        logger.warning("auditv2 mirror failed for log_decision | tenant=%s agent=%s: %s", tenant_id, agent_id, e)
-        try:
-            _capture_silent(e, op="auditv2_log_decision_mirror", tenant_id=tenant_id, agent_id=agent_id)
-        except Exception:
-            pass
-
-    response = {"agent_id": agent_id, "logged": True}
-    if audit_event is not None:
-        # Best-effort surfacing of the audit-v2 row id so callers can verify
-        try:
-            row_id = getattr(audit_event, "_row_id", None) or audit_event.get("_row_id") if isinstance(audit_event, dict) else None
-            if row_id is not None:
-                response["audit_v2_row_id"] = row_id
-        except Exception:
-            pass
-    return response
+    _audit(
+        tenant_id,
+        event_type="decision",
+        agent_id=agent_id,
+        source="api",
+        value={"decision": req.decision, "reasoning": req.reasoning},
+        outcome="success",
+    )
+    return {"agent_id": agent_id, "logged": True}
 
 
 # ---------------------------------------------------------------------------
@@ -2422,6 +3024,7 @@ async def log_decision(agent_id: str, req: DecisionLogRequest, auth=Depends(veri
 
 @app.post("/v1/agents/{agent_id}/recover")
 async def recover_agent(agent_id: str, auth=Depends(verify_auth)):
+    tenant_id = _get_tenant_id(auth)
     backend = _get_tenant_backend(auth)
     if not backend:
         raise HTTPException(status_code=503, detail="Backend not available")
@@ -2435,13 +3038,40 @@ async def recover_agent(agent_id: str, auth=Depends(verify_auth)):
         return asdict(result)
 
     try:
-        return await asyncio.wait_for(
+        result = await asyncio.wait_for(
             loop.run_in_executor(_executor, _do_recovery),
             timeout=90.0,
         )
+        # Audit a successful full-recovery — pulls counts straight off
+        # the asdict()'d RecoveryResult so whatever the orchestrator
+        # actually produced gets recorded.
+        _audit(
+            tenant_id,
+            event_type="recovery",
+            agent_id=agent_id,
+            source="api",
+            outcome="success",
+            extra={
+                "memories_restored": (result or {}).get("memories_restored")
+                                     or (result or {}).get("keys_restored"),
+                "recovery_time_us": (result or {}).get("recovery_time_us")
+                                     or (result or {}).get("total_us"),
+                "trigger": "manual_full_recovery",
+            },
+        )
+        return result
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Recovery timed out — try again when enrichment load is lower")
     except Exception as e:
+        # Failed recovery is itself an audit-worthy event.
+        _audit(
+            tenant_id,
+            event_type="recovery",
+            agent_id=agent_id,
+            source="api",
+            outcome="fail",
+            error_message=str(e)[:500],
+        )
         raise HTTPException(status_code=500, detail=f"Recovery failed: {e}")
 
 
@@ -2482,7 +3112,7 @@ async def all_agents_metrics(auth=Depends(verify_auth)):
 
 
 @app.get("/v1/agents/{agent_id}/metrics")
-async def agent_metrics(agent_id: str, auth=Depends(verify_auth)):
+def agent_metrics(agent_id: str, auth=Depends(verify_auth)):
     backend = _get_tenant_backend(auth)
     tenant_id = _get_tenant_id(auth)
     # Ownership check: verify agent belongs to this tenant
@@ -2882,7 +3512,7 @@ async def system_metrics_timeseries(
 # ---------------------------------------------------------------------------
 
 @app.get("/v1/audit/timeline")
-async def audit_timeline(
+def audit_timeline(
     limit: int = Query(default=50, ge=1, le=500),
     auth=Depends(verify_auth),
 ):
@@ -2941,7 +3571,7 @@ async def agent_audit_replay(
 # ---------------------------------------------------------------------------
 
 @app.get("/v1/agents/{agent_id}/performance")
-async def agent_performance(agent_id: str, auth=Depends(verify_auth)):
+def agent_performance(agent_id: str, auth=Depends(verify_auth)):
     """
     Detailed performance breakdown for an agent.
 
@@ -3562,9 +4192,18 @@ async def update_settings(req: dict, auth=Depends(verify_auth)):
 @app.delete("/v1/agents/{agent_id}/memory/{key:path}")
 async def forget_memory(agent_id: str, key: str, auth=Depends(verify_auth)):
     """Explicitly forget (delete) a specific memory."""
+    tenant_id = _get_tenant_id(auth)
     runtime = _get_runtime(agent_id, auth)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(_executor, lambda: runtime.forget(key))
+    _audit(
+        tenant_id,
+        event_type="memory.delete",
+        agent_id=agent_id,
+        source="api",
+        key=key,
+        outcome="success",
+    )
     return result
 
 
@@ -3573,9 +4212,20 @@ async def forget_stale(agent_id: str, req: dict = None, auth=Depends(verify_auth
     """Forget memories older than max_age_seconds. Preserves critical memories."""
     req = req or {}
     max_age = req.get("max_age_seconds", 604800)  # default 7 days
+    tenant_id = _get_tenant_id(auth)
     runtime = _get_runtime(agent_id, auth)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(_executor, lambda: runtime.forget_stale(max_age))
+    forgotten = (result or {}).get("forgotten") or (result or {}).get("count") or 0
+    _audit(
+        tenant_id,
+        event_type="memory.delete",
+        agent_id=agent_id,
+        source="api",
+        outcome="success",
+        tags=["bulk", "stale"],
+        extra={"forgotten_count": forgotten, "max_age_seconds": max_age},
+    )
     return result
 
 
@@ -3585,9 +4235,20 @@ async def forget_by_tag(agent_id: str, req: dict, auth=Depends(verify_auth)):
     tag = req.get("tag")
     if not tag:
         raise HTTPException(status_code=422, detail="tag required")
+    tenant_id = _get_tenant_id(auth)
     runtime = _get_runtime(agent_id, auth)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(_executor, lambda: runtime.forget_by_tag(tag))
+    forgotten = (result or {}).get("forgotten") or (result or {}).get("count") or 0
+    _audit(
+        tenant_id,
+        event_type="memory.delete",
+        agent_id=agent_id,
+        source="api",
+        outcome="success",
+        tags=["bulk", f"tag:{tag}"],
+        extra={"forgotten_count": forgotten, "tag": tag},
+    )
     return result
 
 
@@ -3600,12 +4261,25 @@ async def consolidate_memories(agent_id: str, req: dict = None, auth=Depends(ver
     req = req or {}
     threshold = req.get("similarity_threshold", 0.90)
     dry_run = req.get("dry_run", True)
+    tenant_id = _get_tenant_id(auth)
     runtime = _get_runtime(agent_id, auth)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         _executor,
         lambda: runtime.consolidate(similarity_threshold=threshold, dry_run=dry_run),
     )
+    # Don't audit dry runs — only real merges are audit-worthy.
+    if not dry_run:
+        merged = (result or {}).get("merged") or (result or {}).get("merged_count") or 0
+        _audit(
+            tenant_id,
+            event_type="memory.consolidate",
+            agent_id=agent_id,
+            source="api",
+            outcome="success",
+            tags=[f"threshold:{threshold}"],
+            extra={"merged_count": merged, "similarity_threshold": threshold},
+        )
     return result
 
 
@@ -3938,15 +4612,17 @@ async def search_filtered(agent_id: str, req: dict, auth=Depends(verify_auth)):
 # ---------------------------------------------------------------------------
 
 @app.get("/v1/brain/status")
-async def brain_status(auth=Depends(verify_auth)):
+def brain_status(auth=Depends(verify_auth)):
     """Get overall Brain intelligence status for the tenant."""
     tenant_id = _get_tenant_id(auth)
     from synrix_runtime.monitoring.brain import BrainHub
-    return BrainHub.get_brain_status(tenant_id)
+    from synrix_runtime.api.response_cache import cached_call
+    return cached_call(f"brain:status:{tenant_id}", 20.0,
+                        BrainHub.get_brain_status, tenant_id)
 
 
 @app.get("/v1/brain/events")
-async def brain_events(
+def brain_events(
     agent_id: str = Query(default=None),
     event_type: str = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
@@ -4027,13 +4703,482 @@ async def set_brain_goal(agent_id: str, req: dict, auth=Depends(verify_auth)):
 
 
 @app.get("/v1/brain/cost-summary")
-async def brain_cost_summary(auth=Depends(verify_auth)):
-    """Get cumulative cost tracking across all loop detections.
-
-    Shows total money saved by catching loops, total wasted before detection,
-    and number of loops caught. Requires llm_model to be set in settings.
-    """
+def brain_cost_summary(auth=Depends(verify_auth)):
+    """Get cumulative cost tracking across all loop detections."""
     tenant_id = _get_tenant_id(auth)
+    # Hot-endpoint cache: cost summary is fine to be up to 30s stale.
+    from synrix_runtime.api.response_cache import cached_call
+    return cached_call(f"brain:cost:{tenant_id}", 30.0, _compute_brain_cost_summary, tenant_id)
+
+
+# ---------------------------------------------------------------------------
+# /v1/brain/graph — data source for the 2D Obsidian-style graph view
+# ---------------------------------------------------------------------------
+#
+# Returns a compact nodes+links graph describing the tenant's current activity:
+#   * agent hubs (one hexagon per registered agent)
+#   * memory writes      — agents:<id>:...                 (circle)
+#   * shared memory      — shared:<space>:...              (double-ringed circle)
+#   * decisions          — agents:<id>:decision:...        (diamond)
+#   * goals              — agents:<id>:goal[s]:...         (triangle)
+#   * loops / drift /
+#     conflict events    — from BrainHub in-memory store   (star / cross / X)
+#
+# Output is intentionally dense-but-capped so the force-directed layout stays
+# responsive. Everything is tenant-scoped via the caller's auth.
+#
+@app.get("/v1/brain/graph")
+def brain_graph(
+    limit: int = Query(default=3000, ge=50, le=8000),
+    since_seconds: int = Query(default=2592000, ge=60, le=31536000),  # 30d default, 1y max
+    agent_id: str = Query(default=None),
+    auth=Depends(verify_auth),
+):
+    """Return a graph snapshot for the 2D knowledge-graph visualiser."""
+    tenant_id = _get_tenant_id(auth)
+    from synrix_runtime.api.response_cache import cached_call
+    ck = f"brain:graph:{tenant_id}:{limit}:{since_seconds}:{agent_id or ''}"
+    return cached_call(ck, 10.0, _compute_brain_graph,
+                       tenant_id, limit, since_seconds, agent_id)
+
+
+def _compute_brain_graph(tenant_id: str, limit: int, since_seconds: int,
+                          only_agent: Optional[str]) -> Dict[str, Any]:
+    """Assemble nodes+links for the graph. Tenant-scoped, capped at `limit`.
+
+    Returned shape (stable — the Lovable front-end depends on it):
+        {
+          "nodes": [ {id, type, agent_id, label, degree, size, created_at,
+                       severity?, namespace?}, ... ],
+          "links": [ {source, target, type, strength}, ... ],
+          "stats": { "agents": N, "memories": N, "truncated": bool, ... },
+        }
+    """
+    import time as _time
+    now = _time.time()
+    cutoff = now - since_seconds
+
+    # ---------- fetch ----------
+    try:
+        from synrix_runtime.api.tenant import TenantManager
+        tm = TenantManager.get_instance()
+        backend = tm.get_backend(tenant_id)
+    except Exception:
+        backend = None
+
+    if backend is None:
+        return {"nodes": [], "links": [], "stats": {"error": "no_backend"}}
+
+    def _safe_prefix(prefix: str, cap: int) -> List[Dict[str, Any]]:
+        try:
+            return backend.query_prefix(prefix, limit=cap) or []
+        except Exception:
+            return []
+
+    # Agents — one hex per registered agent, from their :state row.
+    # We skip agents whose current state is "deregistered" so the graph only
+    # shows live agents (dashboard already filters them out too).
+    agent_rows = _safe_prefix("runtime:agents:", cap=500)
+    agents: Dict[str, Dict[str, Any]] = {}
+    for r in agent_rows:
+        name = r.get("key") or r.get("name") or ""
+        parts = name.split(":", 3)
+        if len(parts) < 4 or parts[3] != "state":
+            continue
+        aid = parts[2]
+        if only_agent and aid != only_agent:
+            continue
+        # Inspect the state value — skip deregistered agents. The stored shape
+        # is {"value": {"value": "running"|"deregistered", ...}, "metadata": ...}
+        state_val = None
+        data = r.get("data") or {}
+        if isinstance(data, dict):
+            inner = data.get("value")
+            if isinstance(inner, dict):
+                state_val = inner.get("value")
+            elif isinstance(inner, str):
+                state_val = inner
+        if state_val == "deregistered":
+            continue
+        agents[aid] = {"id": f"agent:{aid}", "agent_id": aid, "label": aid}
+
+    if not agents and only_agent:
+        # Filter mode with unknown agent — return empty rather than all tenants'.
+        return {"nodes": [], "links": [],
+                 "stats": {"agents": 0, "memories": 0, "truncated": False}}
+
+    # Memory writes, goals, decisions per agent
+    per_agent_budget = max(50, min(1500, limit // max(len(agents), 1)))
+    memories: List[Dict[str, Any]] = []
+    goals: List[Dict[str, Any]] = []
+    decisions: List[Dict[str, Any]] = []
+
+    for aid in agents.keys():
+        rows = _safe_prefix(f"agents:{aid}:", cap=per_agent_budget)
+        for r in rows:
+            name = r.get("key") or r.get("name") or ""
+            parts = name.split(":", 3)  # agents:<aid>:<kind>:...
+            if len(parts) < 3:
+                continue
+            kind = parts[2]
+            ts = r.get("valid_from") or r.get("created_at") or now
+            try:
+                ts = float(ts)
+            except Exception:
+                ts = now
+            if ts < cutoff:
+                continue
+
+            common = {
+                "agent_id": aid,
+                "label": (parts[3] if len(parts) > 3 else kind)[:60],
+                "created_at": ts,
+                "namespace": "agents",
+            }
+            if kind in ("goal", "goals"):
+                goals.append({**common, "id": f"goal:{name}", "type": "goal"})
+            elif kind in ("decision", "decisions"):
+                decisions.append({**common, "id": f"decision:{name}", "type": "decision"})
+            else:
+                memories.append({**common, "id": f"mem:{name}", "type": "memory"})
+
+    # Shared memory — short namespace, cross-agent. Two categories exist
+    # under this prefix and we only want ONE of them in the graph:
+    #   * shared:<space>:<user_key>                → real shared content ✅
+    #   * shared:<space>:changelog:<ts>            → write-event log, noise ❌
+    # Changelog rows are meta-records logging "someone wrote X" and carry
+    # no user-facing content. They confuse the graph (duplicate "shared"
+    # nodes that actually show cryptic {key,action,author,ts} JSON when
+    # clicked), so we filter them out at the source.
+    shared_rows = _safe_prefix("shared:", cap=min(800, limit // 3))
+    shared: List[Dict[str, Any]] = []
+    for r in shared_rows:
+        name = r.get("key") or r.get("name") or ""
+        # Filter out changelog / write-event records — they're not content.
+        # Match on `:changelog:` appearing anywhere after the space segment.
+        if ":changelog:" in name:
+            continue
+        ts = r.get("valid_from") or now
+        try:
+            ts = float(ts)
+        except Exception:
+            ts = now
+        if ts < cutoff:
+            continue
+        data = r.get("data") or {}
+        # Best-effort attribution from the stored value
+        author = None
+        if isinstance(data, dict):
+            inner = data.get("value") if isinstance(data.get("value"), dict) else data
+            if isinstance(inner, dict):
+                author = inner.get("_author") or inner.get("from_agent") or inner.get("author")
+        # name = "shared:<space>:<rest>" — pull the space out so we can show
+        # which shared pool this memory belongs to.
+        parts = name.split(":", 2)
+        space = parts[1] if len(parts) >= 2 else ""
+        shared.append({
+            "id": f"shared:{name}",
+            "type": "shared_memory",
+            "agent_id": author if author in agents else None,
+            "space": space,
+            "author": author,
+            "label": parts[-1][:60] if parts else name[:60],
+            "created_at": ts,
+            "namespace": "shared",
+        })
+
+    # Brain events — three sources, merged:
+    #   1. BrainHub.get_events() — in-memory, the live loop/drift/conflict
+    #      detector writes here. Empty after API restart.
+    #   2. nodes with prefix "alerts:<agent>:<ts>"   — persisted loop/spike
+    #      alerts from the older monitor. Shape:
+    #        {"value": {"type": "repeat_loop"|..., "detail": "...",
+    #                   "agent_id": "...", "severity": "warning", ...}}
+    #   3. nodes with prefix "audit:<agent>:<ts>:decision" — persisted
+    #      decision log.
+    # Pulling all three so the graph shows real historical activity, not
+    # just whatever happened since the last restart.
+    brain_nodes: List[Dict[str, Any]] = []
+
+    # Source 1: BrainHub in-memory
+    try:
+        from synrix_runtime.monitoring.brain import BrainHub
+        evs = BrainHub.get_events(tenant_id, limit=200)
+        for ev in evs:
+            ts = ev.get("timestamp") or now
+            if ts < cutoff:
+                continue
+            aid = ev.get("agent_id")
+            if only_agent and aid != only_agent:
+                continue
+            etype = ev.get("event_type") or "event"
+            node_type = {
+                "loop": "loop",
+                "drift": "drift",
+                "conflict": "conflict",
+                "health": "health",
+                "cost": "cost",
+                "latency": "latency_spike",
+            }.get(etype, etype)
+            details = ev.get("details") or {}
+            brain_nodes.append({
+                "id": f"event:brainhub:{etype}:{ev.get('timestamp') or ts}",
+                "type": node_type,
+                "agent_id": aid,
+                "label": ev.get("message") or etype,
+                "created_at": ts,
+                "severity": ev.get("severity", "info"),
+                "triggering_keys": (
+                    details.get("triggering_keys")
+                    or details.get("keys")
+                    or ev.get("triggering_keys")
+                    or []
+                ),
+                "message": ev.get("message") or "",
+                "details": details,
+                "action_required": bool(ev.get("action_required")),
+                "action_type": ev.get("action_type") or "",
+            })
+    except Exception:
+        pass
+
+    # Set of live agent ids for filtering below.  Events, decisions, and
+    # shared-memory rows from zombie agents (deregistered/purged but with
+    # orphan history rows) still have agent_id populated — we skip them so
+    # the graph only shows activity attributable to a currently-live agent.
+    _live_set = set(agents.keys())
+
+    # Source 2: persisted alerts.  Cap at 200 so a chatty tenant doesn't
+    # bury the graph in loop-warning stars; most recent first.
+    ALERT_TYPE_MAP = {
+        "repeat_loop": "loop",
+        "loop": "loop",
+        "semantic_loop": "loop",
+        "velocity_spike": "loop",
+        "latency_spike": "latency_spike",
+        "latency": "latency_spike",
+        "slow_op": "latency_spike",
+        "drift": "drift",
+        "goal_drift": "drift",
+        "conflict": "conflict",
+        "contradiction": "conflict",
+        "crash": "crash",
+        "recovery": "recovery",
+    }
+    alert_rows = _safe_prefix("alerts:", cap=200)
+    for r in alert_rows:
+        name = r.get("key") or r.get("name") or ""
+        ts = r.get("valid_from") or now
+        try:
+            ts = float(ts)
+        except Exception:
+            ts = now
+        if ts < cutoff:
+            continue
+        data = r.get("data") or {}
+        inner = data.get("value") if isinstance(data.get("value"), dict) else data
+        if not isinstance(inner, dict):
+            continue
+        aid = inner.get("agent_id")
+        # "alerts:<agent>:<ts>" — fall back to parsing the name if the inner
+        # value didn't include agent_id.
+        if not aid:
+            parts = name.split(":", 2)
+            aid = parts[1] if len(parts) >= 2 else None
+        if only_agent and aid != only_agent:
+            continue
+        # Skip alerts whose agent is a zombie (no live state row).  They'd
+        # otherwise pollute the graph with orphan incidents.
+        if aid and aid not in _live_set:
+            continue
+        raw_type = inner.get("type") or inner.get("alert_type") or "loop"
+        node_type = ALERT_TYPE_MAP.get(raw_type, "loop")
+        brain_nodes.append({
+            "id": f"event:alert:{name}",
+            "type": node_type,
+            "agent_id": aid,
+            "label": inner.get("detail") or inner.get("message") or raw_type,
+            "created_at": ts,
+            "severity": inner.get("severity", "warning"),
+            "triggering_keys": inner.get("triggering_keys") or (
+                [inner["key"]] if isinstance(inner.get("key"), str) else []
+            ),
+            "message": inner.get("detail") or inner.get("message") or "",
+            "details": inner,
+            "action_required": bool(inner.get("action_required")),
+            "action_type": inner.get("action_type") or "",
+        })
+
+    # Source 3: persisted decisions under audit:<agent>:<ts>:decision
+    audit_rows = _safe_prefix("audit:", cap=200)
+    for r in audit_rows:
+        name = r.get("key") or r.get("name") or ""
+        if not name.endswith(":decision"):
+            continue
+        ts = r.get("valid_from") or now
+        try:
+            ts = float(ts)
+        except Exception:
+            ts = now
+        if ts < cutoff:
+            continue
+        parts = name.split(":", 3)  # audit:<agent>:<ts>:decision
+        aid = parts[1] if len(parts) >= 2 else None
+        if only_agent and aid != only_agent:
+            continue
+        # Skip decisions from zombie agents.
+        if aid and aid not in _live_set:
+            continue
+        data = r.get("data") or {}
+        inner = data.get("value") if isinstance(data.get("value"), dict) else data
+        label = (isinstance(inner, dict) and (inner.get("decision") or inner.get("summary")))
+        if not label:
+            label = "decision"
+        # Decisions live under the owning agent even though they're in the
+        # audit namespace, so they slot into the agent's cluster visually.
+        decisions.append({
+            "id": f"decision:audit:{name}",
+            "type": "decision",
+            "agent_id": aid,
+            "label": str(label)[:60],
+            "created_at": ts,
+            "namespace": "audit",
+            "details": inner if isinstance(inner, dict) else {"raw": inner},
+        })
+
+    # ---------- assemble nodes + cap ----------
+    all_nodes: List[Dict[str, Any]] = []
+    # Agents first (always included)
+    for a in agents.values():
+        all_nodes.append({**a, "type": "agent"})
+    # Then events (always — incidents never get truncated)
+    all_nodes.extend(brain_nodes)
+    # Then goals + decisions
+    all_nodes.extend(goals)
+    all_nodes.extend(decisions)
+    # Then shared memory
+    all_nodes.extend(shared)
+    # Finally, memories fill remaining budget, newest first
+    memories.sort(key=lambda n: n["created_at"], reverse=True)
+    budget_left = max(0, limit - len(all_nodes))
+    truncated = len(memories) > budget_left
+    all_nodes.extend(memories[:budget_left])
+
+    # ---------- compute edges ----------
+    node_ids = {n["id"] for n in all_nodes}
+    links: List[Dict[str, Any]] = []
+
+    # 1. agent -> owns -> each of its {memory|goal|decision}
+    for n in all_nodes:
+        if n["type"] in ("memory", "goal", "decision") and n.get("agent_id"):
+            ahub = f"agent:{n['agent_id']}"
+            if ahub in node_ids:
+                links.append({"source": ahub, "target": n["id"],
+                              "type": "owns", "strength": 2})
+
+    # 2. loop / latency_spike / conflict -> triggering memory keys
+    for n in brain_nodes:
+        if n["type"] in ("loop", "latency_spike", "conflict"):
+            ahub = f"agent:{n['agent_id']}" if n.get("agent_id") else None
+            if ahub and ahub in node_ids:
+                links.append({"source": ahub, "target": n["id"],
+                              "type": "emits", "strength": 3})
+            for k in n.get("triggering_keys", [])[:8]:
+                mid = f"mem:{k}"
+                if mid in node_ids:
+                    links.append({"source": n["id"], "target": mid,
+                                  "type": "triggered_by", "strength": 2})
+
+    # 3. shared_memory -> each agent (bridging)
+    for n in all_nodes:
+        if n["type"] != "shared_memory":
+            continue
+        # If we know the author, link it to its author preferentially;
+        # otherwise just link to any agent that has rows in this space.
+        if n.get("agent_id"):
+            ahub = f"agent:{n['agent_id']}"
+            if ahub in node_ids:
+                links.append({"source": ahub, "target": n["id"],
+                              "type": "shared_write", "strength": 1})
+
+    # ---------- degree + node size ----------
+    from collections import Counter
+    deg = Counter()
+    for l in links:
+        deg[l["source"]] += 1
+        deg[l["target"]] += 1
+
+    import math
+    # Size rules — three signals:
+    #   1. BASE by type           — agents biggest, incidents mid, memory smallest
+    #   2. + degree               — well-connected nodes grow (hubs)
+    #   3. + recency bonus        — nodes written in the last day get a +N
+    #                               boost so "recent activity" pops at zoom-out.
+    # Caps at 16 so no node can dominate the canvas.
+    SIZE_BASE = {
+        "agent": 14,
+        "loop": 8,
+        "latency_spike": 8,
+        "conflict": 8,
+        "drift": 7,
+        "crash": 10,
+        "recovery": 7,
+        "decision": 6,
+        "goal": 6,
+        "shared_memory": 5,
+        "memory": 3,
+    }
+    # Recency curve in 7 buckets the user can spot at a glance:
+    #   <5min   +6   blazing fresh
+    #   <30min  +5
+    #   <1h     +4
+    #   <4h     +3
+    #   <24h    +2
+    #   <1 week +1
+    #   <1 month 0   (default size)
+    #   older   -1   visibly smaller than default
+    def _recency_boost(age_s: float) -> int:
+        if age_s < 300:       return 6
+        if age_s < 1800:      return 5
+        if age_s < 3600:      return 4
+        if age_s < 14_400:    return 3
+        if age_s < 86_400:    return 2
+        if age_s < 604_800:   return 1
+        if age_s < 2_592_000: return 0
+        return -1
+
+    for n in all_nodes:
+        d = deg.get(n["id"], 0)
+        n["degree"] = d
+        base = SIZE_BASE.get(n["type"], 3)
+        age = max(0.0, now - float(n.get("created_at") or now))
+        recency = _recency_boost(age)
+        # Don't boost agent hubs by recency — they're always the biggest.
+        if n["type"] == "agent":
+            recency = 0
+        n["size"] = int(min(16, base + math.sqrt(d) * 0.9 + recency))
+        n["recency_boost"] = recency  # expose for UI tooltip
+
+    return {
+        "nodes": all_nodes,
+        "links": links,
+        "stats": {
+            "agents": len(agents),
+            "memories": sum(1 for n in all_nodes if n["type"] == "memory"),
+            "decisions": len(decisions),
+            "goals": len(goals),
+            "shared": len(shared),
+            "events": len(brain_nodes),
+            "total_nodes": len(all_nodes),
+            "total_links": len(links),
+            "truncated": truncated,
+            "since_seconds": since_seconds,
+            "computed_at": now,
+        },
+    }
+
+
+def _compute_brain_cost_summary(tenant_id: str):
     settings = _get_tenant_settings(tenant_id)
     model = settings.get("llm_model", "unknown")
 
@@ -4482,6 +5627,141 @@ _PLAN_MONTHLY_USD = {
     "enterprise": 0,  # custom — not counted in auto-MRR
 }
 
+# ---------------------------------------------------------------------------
+# audit_v2 — persistent, hash-chained audit trail.  Read-only endpoints for
+# now; the SDK/framework/MCP instrumentation that *emits* events is
+# deliberately NOT yet wired to production code paths. These endpoints let
+# you browse and tamper-check whatever events have been persisted so far.
+# Admin-only while we stabilise.
+# ---------------------------------------------------------------------------
+
+@app.get("/v1/auditv2/events")
+async def auditv2_list_events(
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    agent_id: Optional[str] = Query(default=None),
+    event_type: Optional[str] = Query(default=None),
+    auth=Depends(verify_auth),
+):
+    tenant_id = _get_tenant_id(auth)
+    # Tenant isolation is enforced by audit_v2.storage via SET app.tenant_id
+    # + RLS, so it's safe to expose to any authenticated user. Admin gate
+    # removed at GA — was only there during beta hardening.
+    from synrix_runtime.audit_v2 import list_events, count_events
+    events = list_events(
+        tenant_id,
+        limit=limit,
+        offset=offset,
+        agent_id=agent_id,
+        event_type=event_type,
+    )
+    total = count_events(tenant_id, agent_id=agent_id, event_type=event_type)
+    return {"events": events, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/v1/auditv2/events/{row_id}")
+async def auditv2_get_event(row_id: int, auth=Depends(verify_auth)):
+    tenant_id = _get_tenant_id(auth)
+    from synrix_runtime.audit_v2 import get_event, get_context
+    ev = get_event(tenant_id, row_id)
+    if not ev:
+        raise HTTPException(status_code=404, detail="event not found")
+    # Also return a small window of surrounding events for context.
+    try:
+        ctx = get_context(tenant_id, row_id, window=5)
+    except Exception:
+        ctx = {"before": [], "after": []}
+    return {"event": ev, "context": ctx}
+
+
+@app.get("/v1/auditv2/verify-chain")
+async def auditv2_verify_chain(
+    agent_id: Optional[str] = Query(default=None),
+    auth=Depends(verify_auth),
+):
+    tenant_id = _get_tenant_id(auth)
+    from synrix_runtime.audit_v2 import verify_chain
+    return verify_chain(tenant_id, agent_id=agent_id)
+
+
+@app.post("/v1/auditv2/emit-test")
+async def auditv2_emit_test(auth=Depends(verify_auth)):
+    """Emit a single test event so the dashboard has something to show.
+    Lets a user smoke-test the audit pipeline end-to-end from the dashboard."""
+    tenant_id = _get_tenant_id(auth)
+    from synrix_runtime.audit_v2 import log
+    row_id = log(
+        tenant_id,
+        event_type="memory.write",
+        agent_id="dashboard-probe",
+        source="sdk",
+        key="auditv2:smoke-test",
+        value={"note": "Triggered from dashboard by admin", "ts": time.time()},
+        tags=["smoke-test"],
+        outcome="success",
+    )
+    return {"ok": row_id >= 0, "row_id": row_id}
+
+
+@app.post("/v1/auditv2/event")
+async def auditv2_emit_public(req: dict, auth=Depends(verify_auth)):
+    """Public emit endpoint — SDK / framework adapters / MCP servers post
+    here to record their own events.  This is the answer to Phase 3 hooks
+    without us having to instrument every framework's internals: the
+    frameworks themselves (or their wrappers) emit via this single API.
+
+    Body shape:
+        {
+          "event_type": "tool.call",     # required, must be in EVENT_TYPES
+          "agent_id":   "...",           # required
+          "source":     "langchain",     # one of api|sdk|langchain|crewai|autogen|openai|mcp
+          "key":        "...",           # optional — what the call acted on
+          "value":      <any>,           # optional — payload preview (auto-truncated)
+          "outcome":    "success",       # success|fail|timeout|unknown
+          "cost_usd":   0.0042,          # optional
+          "tokens_in":  1280,            # optional
+          "tokens_out": 420,             # optional
+          "latency_ms": 1840,            # optional
+          "tags":       ["..."],
+          "session_id": "...",           # optional — groups events into a story
+          "user_id":    "...",           # optional — end-user attribution
+          "error_message": "...",        # optional, only on outcome=fail
+          "extra":      {...},           # optional structured detail
+        }
+
+    Returns the new row id (or -1 if the event was rejected / silently
+    dropped — invalid event_type, queue full, etc.).
+    """
+    tenant_id = _get_tenant_id(auth)
+    from synrix_runtime.audit_v2 import log
+    if not isinstance(req, dict):
+        raise HTTPException(status_code=422, detail="JSON object required")
+    etype = req.get("event_type")
+    aid = req.get("agent_id")
+    if not etype or not aid:
+        raise HTTPException(status_code=422,
+                            detail="event_type and agent_id are required")
+    row_id = log(
+        tenant_id,
+        event_type=etype,
+        agent_id=aid,
+        source=req.get("source", "sdk"),
+        key=req.get("key"),
+        value=req.get("value"),
+        outcome=req.get("outcome", "success"),
+        cost_usd=float(req.get("cost_usd") or 0.0),
+        tokens_in=int(req.get("tokens_in") or 0),
+        tokens_out=int(req.get("tokens_out") or 0),
+        latency_ms=int(req.get("latency_ms") or 0),
+        tags=req.get("tags") or [],
+        session_id=req.get("session_id"),
+        user_id=req.get("user_id"),
+        error_message=req.get("error_message"),
+        extra=req.get("extra") or {},
+    )
+    return {"ok": row_id >= 0, "row_id": row_id}
+
+
 @app.get("/v1/admin/billing/overview")
 async def admin_billing_overview(auth=Depends(verify_auth)):
     """Admin-only billing dashboard data: paid tenants, MRR, recent Stripe events."""
@@ -4575,3 +5855,13 @@ async def admin_billing_overview(auth=Depends(verify_auth)):
         "paid_tenants": paid_tenants,
         "recent_events": recent_events,
     }
+
+# --- Loop Intelligence v2 (auto-applied by ExecStartPre) ---
+import os as _os_li2
+if _os_li2.environ.get("OCTOPODA_LOOP_INTEL_V2") == "1":
+    try:
+        from synrix_runtime.loop_intel_v2.api import router as _loop_intel_v2_router
+        app.include_router(_loop_intel_v2_router)
+        logger.info("loop_intel_v2 router mounted at /v1/loops/v2/*")
+    except Exception as _e:
+        logger.warning("loop_intel_v2 router NOT mounted: %s", _e)

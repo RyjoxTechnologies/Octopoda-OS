@@ -3,7 +3,6 @@ Octopoda Agent Runtime — Central Daemon
 The central nervous system of the entire runtime.
 """
 
-import os
 import time
 import json
 import threading
@@ -129,15 +128,19 @@ class RuntimeDaemon:
     def deregister_agent(self, agent_id: str):
         """Mark agent as deregistered. Memory is never deleted."""
         self.backend.write(f"runtime:agents:{agent_id}:state", {"value": "deregistered"}, metadata={"type": "agent_state"})
-        self.backend.write(f"runtime:agents:{agent_id}:last_active", {"value": time.time()}, metadata={"type": "timestamp"})
+        # last_active is a liveness ping — ephemeral (no history).
+        self.backend.write_ephemeral(f"runtime:agents:{agent_id}:last_active", time.time(), metadata={"type": "timestamp"})
         self._update_agent_count()
         self.emit_event("agent_deregistered", {"agent_id": agent_id})
 
     def update_heartbeat(self, agent_id: str):
         """Update heartbeat timestamp for an agent."""
         now = time.time()
-        self.backend.write(f"runtime:agents:{agent_id}:heartbeat", {"value": now}, metadata={"type": "heartbeat"})
-        self.backend.write(f"runtime:agents:{agent_id}:last_active", {"value": now}, metadata={"type": "timestamp"})
+        # Heartbeats are high-frequency liveness pings; keep no history
+        # (otherwise a long-lived agent accumulates hundreds of thousands
+        # of rows — see prod incident: one agent had 212k heartbeat rows).
+        self.backend.write_ephemeral(f"runtime:agents:{agent_id}:heartbeat", now, metadata={"type": "heartbeat"})
+        self.backend.write_ephemeral(f"runtime:agents:{agent_id}:last_active", now, metadata={"type": "timestamp"})
         self._increment_ops(2)
 
     def get_agent_state(self, agent_id: str) -> Optional[str]:
@@ -218,7 +221,8 @@ class RuntimeDaemon:
         step5_start = time.perf_counter_ns()
         self.backend.write(f"runtime:agents:{agent_id}:state", {"value": "recovering"}, metadata={"type": "agent_state"})
         self.backend.write(f"runtime:agents:{agent_id}:state", {"value": "running"}, metadata={"type": "agent_state"})
-        self.backend.write(f"runtime:agents:{agent_id}:heartbeat", {"value": time.time()}, metadata={"type": "heartbeat"})
+        # Heartbeat is a liveness ping — ephemeral (no history).
+        self.backend.write_ephemeral(f"runtime:agents:{agent_id}:heartbeat", time.time(), metadata={"type": "heartbeat"})
         step5_us = (time.perf_counter_ns() - step5_start) / 1000
 
         total_us = (time.perf_counter_ns() - total_start) / 1000
@@ -374,10 +378,10 @@ class RuntimeDaemon:
                                 logger.error("Recovery failed for %s: %s", agent_id, e)
             except Exception as e:
                 logger.error("Heartbeat monitor error: %s", e, exc_info=True)
-            time.sleep(int(os.getenv("SYNRIX_HEARTBEAT_INTERVAL_SEC", "3")))
+            time.sleep(3)
 
     def _anomaly_detector_loop(self):
-        """Background thread: check for anomalies (default every 5 seconds, override via SYNRIX_ANOMALY_INTERVAL_SEC)."""
+        """Background thread: check for anomalies every 5 seconds."""
         while self.running:
             try:
                 # Import here to avoid circular imports
@@ -392,10 +396,10 @@ class RuntimeDaemon:
                             self.emit_event("anomaly_detected", anomaly)
             except Exception as e:
                 logger.error("Anomaly detector error: %s", e, exc_info=True)
-            time.sleep(int(os.getenv("SYNRIX_ANOMALY_INTERVAL_SEC", "5")))
+            time.sleep(5)
 
     def _metrics_aggregator_loop(self):
-        """Background thread: aggregate system metrics (default every 10 seconds, override via SYNRIX_METRICS_INTERVAL_SEC)."""
+        """Background thread: aggregate system metrics every 10 seconds."""
         while self.running:
             try:
                 agents = self.get_active_agents()
@@ -407,10 +411,10 @@ class RuntimeDaemon:
                 )
             except Exception as e:
                 logger.error("Metrics aggregator error: %s", e, exc_info=True)
-            time.sleep(int(os.getenv("SYNRIX_METRICS_INTERVAL_SEC", "10")))
+            time.sleep(10)
 
     def _recovery_watchdog_loop(self):
-        """Background thread: watch for agents needing recovery (default every 5 seconds, override via SYNRIX_RECOVERY_INTERVAL_SEC)."""
+        """Background thread: watch for agents needing recovery every 5 seconds."""
         while self.running:
             try:
                 agents = self.get_all_agents()
@@ -424,7 +428,7 @@ class RuntimeDaemon:
                                 logger.error("Watchdog recovery failed for %s: %s", agent_id, e)
             except Exception as e:
                 logger.error("Recovery watchdog error: %s", e, exc_info=True)
-            time.sleep(int(os.getenv("SYNRIX_RECOVERY_INTERVAL_SEC", "5")))
+            time.sleep(5)
 
     def _gc_loop(self):
         """Background thread: run garbage collection periodically."""
@@ -436,12 +440,9 @@ class RuntimeDaemon:
                 return
             gc = GarbageCollector(self.backend, gc_config)
             interval_seconds = gc_config.interval_hours * 3600
-            logger.info(
-                "GC started: interval=%dh, metrics=%dd, events=%dd, audit=%dd, runtime_agents=%dd",
-                gc_config.interval_hours, gc_config.metrics_days,
-                gc_config.events_days, gc_config.audit_days,
-                gc_config.runtime_agents_days,
-            )
+            logger.info("GC started: interval=%dh, metrics=%dd, events=%dd, audit=%dd",
+                        gc_config.interval_hours, gc_config.metrics_days,
+                        gc_config.events_days, gc_config.audit_days)
         except Exception as e:
             logger.error("Failed to initialize GC: %s", e)
             return
@@ -451,7 +452,7 @@ class RuntimeDaemon:
                 stats = gc.run_gc()
                 total = stats.get("metrics_deleted", 0) + stats.get("events_deleted", 0) + \
                         stats.get("alerts_deleted", 0) + stats.get("audit_deleted", 0) + \
-                        stats.get("runtime_agents_deleted", 0) + stats.get("snapshots_pruned", 0)
+                        stats.get("snapshots_pruned", 0)
                 if total > 0:
                     logger.info("GC cycle: %d entries pruned in %.1fms", total, stats.get("elapsed_ms", 0))
             except Exception as e:

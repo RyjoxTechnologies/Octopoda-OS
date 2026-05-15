@@ -1,5 +1,29 @@
 # Changelog
 
+## 3.1.10 (2026-05-15)
+
+Sync from production `dashboard-perf-100-agents` branch. PyPI was missing files that prod has been running for weeks — most importantly the entire `synrix_runtime/audit_v2/` module (referenced by `cloud_server.py` but not shipped). Anyone self-hosting via `octopoda[server]` would have hit `ImportError` on launch.
+
+### What's now in PyPI for the first time
+
+- **`synrix_runtime/audit_v2/`** — full hash-chained audit module (storage, api, async_writer, sdk_hooks, mcp_hooks, llm_hooks, cost, decisions, framework_hooks, models, trace, standalone, UI). The "tamper-evident audit chain" marketing claim is now backed by code that actually ships, not just code that runs on the prod VPS.
+- **Dashboard rebuild** — newer Neural Graph bundle (`NeuralGraph-JivWmplo.js`), refreshed mockup avatars, updated index/llms.txt/sitemap.
+- **`synrix_runtime/api/response_cache.py`** — request-level response cache.
+- **`loop_intel_v2`** module updates — reflection classifier rewrite, adapter improvements.
+- **`synrix_runtime/api/cloud_server.py`** — 100-agent scalability fixes (async→sync conversion for hot endpoints, connection pool bump, response cache, warmup, background refresh backoff).
+
+### Why this exists
+
+Two parallel streams of work had been drifting apart for weeks: `main` (where PyPI was cut from) and `dashboard-perf-100-agents` (where prod hotfixes actually landed on the VPS). This release reconciles them.
+
+The single bad commit in perf's history (29K venv binary objects, including a 516 MB CUDA libcublasLt) is dropped during the sync. The perf branch itself remains as-is on the VPS; only the deliverable tree comes through.
+
+### Verified before release
+
+- `synrix_runtime/audit_v2/__init__.py` importable from the wheel.
+- `cloud_server.py /health` reports `version: "3.1.10"`.
+- `pip install octopoda==3.1.10` brings the new dashboard assets.
+
 ## 3.1.9 (2026-05-15)
 
 Follow-up to 3.1.8 — addresses the cloud-side findings from the May 2026 audit.
