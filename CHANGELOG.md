@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.1.14 (2026-05-15)
+
+Patch on top of 3.1.13. Closes two bugs surfaced by running 3.1.13 in prod:
+
+- **v1→v2 trip was emailing the cost-template alert** ("Threshold: $0.00/min, Spending: $0.0000") for v1-triggered pauses. The cost template doesn't fit a write-pattern trip — the threshold is 0 by design (marker row, not a real spend cap). Silenced the email path for v1-triggered pauses until a v1-shaped template lands.
+- **`DELETE /v1/agents/{id}?purge=true` didn't clear `LoopBreaker._paused_agents`.** If an agent was paused by the v1→v2 trip and the caller then purged, the in-memory pause persisted and prevented the same agent_id being recreated and written to until process restart. Now `LoopBreaker.resume_agent()` is called on the soft-delete and hard-purge paths.
+
+Both caught by running the 3.1.13 verification probe — the test agent stayed paused after `?purge=true` and the user got a misleading email alert.
+
 ## 3.1.13 (2026-05-15)
 
 Closes the remaining 4 audit items + the §12.3 partial fail from 3.1.12. All 12 of the auditor's priority items now have code behind them.

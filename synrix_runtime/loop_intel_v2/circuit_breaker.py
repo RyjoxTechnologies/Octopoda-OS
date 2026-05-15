@@ -259,14 +259,16 @@ def trip_on_v1_severity(conn, tenant_id: str, agent_id: str, severity: str,
         except Exception:
             pass
 
-    if notify_email and paused:
-        try:
-            _send_alert_email(
-                notify_email, agent_id,
-                spend=0.0, threshold=0.0, tenant_id=tenant_id,
-            )
-        except Exception:
-            pass
+    # Intentionally DON'T fire _send_alert_email here. That email template
+    # is cost-shaped ("Spending: $X.XX, Threshold: $Y.YY/min") and would
+    # read as nonsense for a v1-triggered pause where the trip reason is
+    # write-pattern severity, not spend. Surfacing a properly-shaped v1
+    # alert is its own task (different subject, body refers to severity +
+    # signals). Until that lands, silence beats misleading.
+    # Audit-fix follow-up: caught when 3.1.13 verification's test probe got
+    # paused and the user received "Threshold: $0.00/min" — confusing copy
+    # because of the marker row's threshold=0.0.
+    _ = notify_email  # kept for future v1-shaped alert wiring
 
     return {
         "tenant_id": tenant_id,

@@ -261,7 +261,7 @@ def _capture_silent(exc: Exception, op: str = "", **context):
 
 app = FastAPI(
     title="Octopoda Agent Memory API",
-    version="3.1.13",
+    version="3.1.14",
     description="Persistent Memory Kernel for AI Agents. Sub-millisecond crash recovery, shared memory bus, full audit trail.",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -1487,7 +1487,7 @@ async def health():
         backend_type = getattr(_daemon.backend, 'backend_type', 'unknown')
     return HealthResponse(
         status="ok",
-        version="3.1.13",
+        version="3.1.14",
         backend=backend_type,
         uptime_seconds=time.time() - _boot_time,
     )
@@ -1668,6 +1668,17 @@ async def deregister_agent(
         from synrix_runtime.monitoring.metrics import MetricsCollector
         with MetricsCollector._cache_lock:
             MetricsCollector._metrics_cache.pop(f"{tenant_id}:{agent_id}", None)
+    except Exception:
+        pass
+
+    # Clear in-memory LoopBreaker pause state — without this, an agent
+    # that was paused by v1->v2 wiring stays paused in the LoopBreaker
+    # _paused_agents dict even after the data is gone. The caller can't
+    # recreate the agent and write to it until the next process restart.
+    # Caught when 3.1.13 verification's test probe stayed paused after purge.
+    try:
+        from synrix_runtime.monitoring.brain import LoopBreaker
+        LoopBreaker.resume_agent(tenant_id, agent_id)
     except Exception:
         pass
 
