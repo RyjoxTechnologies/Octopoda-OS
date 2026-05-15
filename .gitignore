@@ -113,3 +113,4 @@ scripts/create_admin_activation_fn.py
 scripts/test_free_tier_cap.py
 scripts/test_stripe_full_sequence.py
 scripts/test_tenant_isolation.py
+.verification_codes.json
