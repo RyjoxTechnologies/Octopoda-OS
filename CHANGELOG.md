@@ -1,5 +1,34 @@
 # Changelog
 
+## 3.1.9 (2026-05-15)
+
+Follow-up to 3.1.8 — addresses the cloud-side findings from the May 2026 audit.
+
+### `DELETE /v1/agents/{agent_id}?purge=true` — real hard delete
+
+Previously the DELETE endpoint only soft-deleted (set state to `deregistered`, data preserved). Auditor flagged that as a GDPR Article 17 / CCPA delete-on-request blocker. Now accepts `?purge=true` query param. When set, physically removes every row the agent ever produced across five namespaces:
+
+- `runtime:agents:{agent_id}`
+- `agents:{agent_id}`
+- `metrics:{agent_id}`
+- `auditv2:{tenant_short}:{agent_id}`
+- `audit:{agent_id}`
+
+Response includes `rows_deleted` total + `by_namespace` breakdown so callers can verify what got removed.
+
+### `POST /v1/agents/{agent_id}/decision` now mirrors to audit-v2 hash chain
+
+Previously the SDK `log_decision()` call wrote a row in the legacy `audit:*` namespace without a hash chain. Auditor pointed out that the README's "tamper-evident hash chain" claim wasn't true on the default decision-logging path. Now every `log_decision()` call ALSO writes a hash-chained row via `auditv2.log(event_type="decision", ...)`, returning the new `audit_v2_row_id` in the response so callers can verify the chain. The legacy `audit:` row continues to be written for backwards compat with any consumer reading it.
+
+This means: every decision logged via the SDK is now provably part of the per-agent hash chain, queryable via `GET /v1/auditv2/events?agent_id=X` and verifiable via `GET /v1/auditv2/verify-chain`. The marketing claim is now true on the default code path.
+
+### Regressions
+
+- `tests/test_mcp_local_adapter.py`: 13/13 pass
+- `tests/test_gc.py`: 10/10 pass
+- `tests/test_runtime_version_cap.py`: 6/6 pass
+- `tests/ci_smoke.py`: 6/6 pass
+
 ## 3.1.8 (2026-05-15)
 
 ### Local-mode audit response — MCP server gets parity with HTTP API

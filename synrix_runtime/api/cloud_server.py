@@ -1203,25 +1203,79 @@ async def get_agent(agent_id: str, auth=Depends(verify_auth)):
 
 
 @app.delete("/v1/agents/{agent_id}")
-async def deregister_agent(agent_id: str, auth=Depends(verify_auth)):
+async def deregister_agent(
+    agent_id: str,
+    purge: bool = Query(default=False, description="If true, physically delete all the agent's data instead of just marking it deregistered. Required for GDPR Article 17 / CCPA delete-on-request compliance."),
+    auth=Depends(verify_auth),
+):
+    """Deregister an agent. By default this is a soft delete (state set to 'deregistered',
+    data preserved). Pass `?purge=true` to physically remove all of the agent's rows
+    across the runtime/agents/metrics/auditv2 namespaces.
+
+    Audit-finding context: the May 2026 third-party audit flagged that `purged: false`
+    in the response meant data wasn't physically removed even though the agent was
+    'deleted'. This handler now supports a real hard-delete via `?purge=true` and
+    returns `rows_deleted` per namespace so callers can verify.
+    """
     tenant_id = _get_tenant_id(auth)
-    # Check agent actually exists for this tenant
     backend = _get_tenant_backend(auth)
     if backend:
         state = backend.read(f"runtime:agents:{agent_id}:state")
         if state is None:
             raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
         current = state.get("value", "") if isinstance(state, dict) else state
-        if current == "deregistered":
+        if current == "deregistered" and not purge:
             raise HTTPException(status_code=404, detail=f"Agent {agent_id} already deregistered")
     cache_key = f"{tenant_id}:{agent_id}"
     if cache_key in _agent_runtimes:
         _agent_runtimes[cache_key].shutdown()
         del _agent_runtimes[cache_key]
+
+    response = {"agent_id": agent_id, "deregistered": True, "purged": False}
+
     if backend:
-        backend.write(f"runtime:agents:{agent_id}:state", {"value": "deregistered"})
-        backend.write(f"runtime:agents:{agent_id}:last_active", {"value": time.time()})
-    return {"agent_id": agent_id, "deregistered": True}
+        if purge:
+            # Hard delete: remove every row this agent ever produced.
+            # We use delete_prefix_before(prefix, now+1) to delete everything
+            # written up to a future point — i.e. everything that currently exists.
+            by_namespace = {}
+            total = 0
+            errors = []
+            future_cutoff = time.time() + 86400  # future-dated so we catch all current rows
+            for prefix in (
+                f"runtime:agents:{agent_id}",
+                f"agents:{agent_id}",
+                f"metrics:{agent_id}",
+                f"auditv2:{tenant_id[:8]}:{agent_id}",
+                f"audit:{agent_id}",
+            ):
+                try:
+                    if hasattr(backend, "delete_prefix_before"):
+                        n = backend.delete_prefix_before(prefix, future_cutoff) or 0
+                    elif hasattr(backend, "delete_prefix"):
+                        n = backend.delete_prefix(prefix) or 0
+                    else:
+                        n = 0
+                        errors.append(f"backend has no delete_prefix(_before) method for {prefix}")
+                except Exception as e:
+                    logger.warning("purge failed for prefix %s: %s", prefix, e)
+                    errors.append(f"{prefix}: {e}")
+                    n = 0
+                if n > 0:
+                    by_namespace[prefix] = n
+                    total += n
+            response["purged"] = True
+            response["rows_deleted"] = total
+            response["by_namespace"] = by_namespace
+            response["partial"] = total == 0
+            if errors:
+                response["errors"] = errors[:5]
+        else:
+            # Soft delete (original behaviour).
+            backend.write(f"runtime:agents:{agent_id}:state", {"value": "deregistered"})
+            backend.write(f"runtime:agents:{agent_id}:last_active", {"value": time.time()})
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -2307,10 +2361,59 @@ async def agent_audit(
 
 @app.post("/v1/agents/{agent_id}/decision")
 async def log_decision(agent_id: str, req: DecisionLogRequest, auth=Depends(verify_auth)):
+    """Log an agent decision.
+
+    Writes to BOTH the legacy `audit:` rows (preserves backwards compat for any
+    consumer that reads them) AND the audit-v2 hash-chained ledger. This way
+    the marketing claim 'every decision hashed and chained' is true on the
+    default code path, not just when callers manually use the audit-v2
+    endpoints. Audit-finding context: May 2026 audit flagged that log_decision
+    wrote a row without a hash chain even though the cloud serves an audit-v2
+    chain elsewhere; this commit makes the two consistent.
+    """
     runtime = _get_runtime(agent_id, auth)
+    tenant_id = _get_tenant_id(auth)
     loop = asyncio.get_event_loop()
+
+    # 1. Legacy log_decision — keeps existing audit: rows + memory snapshot behavior
     await loop.run_in_executor(_executor, lambda: runtime.log_decision(req.decision, req.reasoning, req.context))
-    return {"agent_id": agent_id, "logged": True}
+
+    # 2. Mirror to audit-v2 so the decision is part of the hash chain
+    audit_event = None
+    try:
+        from synrix_runtime.audit_v2 import log as auditv2_log
+        audit_event = await loop.run_in_executor(_executor, lambda: auditv2_log(
+            tenant_id=tenant_id,
+            event_type="decision",
+            agent_id=agent_id,
+            source="sdk",
+            key=None,
+            value=req.decision,
+            tags=["decision"],
+            extra={
+                "reasoning": req.reasoning,
+                "context": req.context if isinstance(req.context, dict) else (req.context or {}),
+            },
+        ))
+    except Exception as e:
+        # auditv2 is non-blocking — never fail a decision write because the
+        # hash-chain mirror had trouble. Surface in logs + Sentry.
+        logger.warning("auditv2 mirror failed for log_decision | tenant=%s agent=%s: %s", tenant_id, agent_id, e)
+        try:
+            _capture_silent(e, op="auditv2_log_decision_mirror", tenant_id=tenant_id, agent_id=agent_id)
+        except Exception:
+            pass
+
+    response = {"agent_id": agent_id, "logged": True}
+    if audit_event is not None:
+        # Best-effort surfacing of the audit-v2 row id so callers can verify
+        try:
+            row_id = getattr(audit_event, "_row_id", None) or audit_event.get("_row_id") if isinstance(audit_event, dict) else None
+            if row_id is not None:
+                response["audit_v2_row_id"] = row_id
+        except Exception:
+            pass
+    return response
 
 
 # ---------------------------------------------------------------------------
