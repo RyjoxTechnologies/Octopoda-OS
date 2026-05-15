@@ -440,19 +440,6 @@ pip install octopoda[all]         # Everything (Python 3.10+)
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and guidelines.
 
-## Recently
-
-A third party audit ([Dvalin21](https://github.com/Dvalin21), May 2026) probed every advertised feature against local + cloud. 7 GitHub issues across two reporters were filed. All 7 are closed and live verified against `api.octopodas.com`.
-
-The receipts are in the repo:
-
-* `audit_verify_3_1_13.py` — 12 of the auditor's priority items, live HTTP probes against production.
-* `mcp_stdio_harness.py` — drives `octopoda-mcp` over JSON RPC the same way Claude Code does.
-* `user_simulation.py` — fresh venv, `pip install octopoda` from PyPI, exercises every SDK path.
-* `local_dashboard_smoke.py` — proves the bundled dashboard serves byte identical assets to `octopodas.com/dashboard`.
-
-Anyone can clone and rerun them. 12/12 + 7/7 + 4/5 pass on the latest release.
-
 ## Security
 
 See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
@@ -461,7 +448,18 @@ See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ## License
 
-MIT — use it however you want. See [LICENSE](LICENSE).
+MIT, use it however you want. See [LICENSE](LICENSE).
+
+## Verification harnesses
+
+The repo ships four scripts under `scripts/integration/` that exercise the product end to end against both a fresh PyPI install and live `api.octopodas.com`:
+
+* `audit_verify_3_1_13.py`: live HTTP probes against production. Currently 12 of 12 pass.
+* `mcp_stdio_harness.py`: drives `octopoda-mcp` over JSON RPC the way Claude Code does. 7 of 7 pass.
+* `user_simulation.py`: fresh venv, `pip install octopoda` from PyPI, exercises every SDK path.
+* `local_dashboard_smoke.py`: proves the bundled dashboard serves byte identical assets to `octopodas.com/dashboard`.
+
+Anyone can clone and rerun them.
 
 ---
 
