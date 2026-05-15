@@ -1,5 +1,3 @@
-[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/ryjoxtechnologies-octopoda-os-badge.png)](https://mseep.ai/app/ryjoxtechnologies-octopoda-os)
-
 <p align="center">
   <video src="https://github.com/RyjoxTechnologies/Octopoda-OS/raw/main/docs/images/octopoda-hero.mp4" autoplay loop muted playsinline width="800">
     <img src="docs/images/octopoda-hero.jpg" alt="Octopoda" width="800" />
@@ -75,10 +73,12 @@ from octopoda import AgentRuntime
 
 agent = AgentRuntime("my_agent")
 agent.remember("user_pref", "dark mode")
+
 agent.recall("user_pref")
+# still returns 'dark mode' after a restart, a deploy, or a process crash.
 ```
 
-That's it. Your agent now has persistent memory, loop detection, crash recovery, and an audit trail. No config, no setup, no Docker. Memory survives restarts, crashes, and deployments — automatically.
+That is the entire setup. Your agent now has persistent memory, loop detection, crash recovery, and an audit trail. No config, no Docker, no Redis, no extra services.
 
 ### Want the dashboard?
 
@@ -112,6 +112,23 @@ export OCTOPODA_API_KEY=sk-octopoda-...
 | Upgrade path           | Set `OCTOPODA_API_KEY`         | Already there                  |
 
 Start local. Move to cloud when you need sync, team access, or the managed dashboard. Same Python API both ways.
+
+---
+
+## How it stacks up
+
+|                        | Octopoda                                       | Mem0             | Zep              | LangChain Memory |
+|------------------------|------------------------------------------------|------------------|------------------|------------------|
+| Open source            | MIT                                            | Apache 2.0       | Partial (CE)     | MIT              |
+| Local-first            | Yes (SQLite)                                   | Cloud-first      | Cloud-first      | In process       |
+| Loop detection         | 5 signal engine                                | No               | No               | No               |
+| Agent messaging        | Built in                                       | No               | No               | No               |
+| Audit trail            | Hash chained (audit v2)                        | No               | No               | No               |
+| Crash recovery         | Snapshots + restore                            | N/A              | No               | No               |
+| Shared memory          | Built in                                       | No               | No               | No               |
+| MCP server             | 29 tools                                       | No               | No               | No               |
+| Semantic search        | Local embeddings                               | Cloud embeddings | Cloud embeddings | Needs vector DB  |
+| Framework integrations | LangChain, CrewAI, AutoGen, OpenAI Agents SDK  | LangChain        | LangChain        | Own only         |
 
 ---
 
@@ -388,23 +405,6 @@ results = agent.search("user preferences")
 
 ---
 
-## How It Compares
-
-|                       | Octopoda           | Mem0             | Zep              | LangChain Memory |
-|-----------------------|--------------------|------------------|------------------|------------------|
-| Open source           | MIT                | Apache 2.0       | Partial (CE)     | MIT              |
-| Local-first           | Yes (SQLite)       | Cloud-first      | Cloud-first      | In-process       |
-| Loop detection        | 5-signal engine    | No               | No               | No               |
-| Agent messaging       | Built-in           | No               | No               | No               |
-| Audit trail           | Hash-chained       | No               | No               | No               |
-| Crash recovery        | Snapshots + restore| N/A              | No               | No               |
-| Shared memory         | Built-in           | No               | No               | No               |
-| MCP server            | 28 tools           | No               | No               | No               |
-| Semantic search       | Local embeddings   | Cloud embeddings | Cloud embeddings | Needs vector DB  |
-| Framework integrations| LangChain, CrewAI, AutoGen, OpenAI Agents SDK | LangChain | LangChain | Own only |
-
----
-
 ## Installation
 
 ```bash
@@ -440,9 +440,24 @@ pip install octopoda[all]         # Everything (Python 3.10+)
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and guidelines.
 
+## Recently
+
+A third party audit ([Dvalin21](https://github.com/Dvalin21), May 2026) probed every advertised feature against local + cloud. 7 GitHub issues across two reporters were filed. All 7 are closed and live verified against `api.octopodas.com`.
+
+The receipts are in the repo:
+
+* `audit_verify_3_1_13.py` — 12 of the auditor's priority items, live HTTP probes against production.
+* `mcp_stdio_harness.py` — drives `octopoda-mcp` over JSON RPC the same way Claude Code does.
+* `user_simulation.py` — fresh venv, `pip install octopoda` from PyPI, exercises every SDK path.
+* `local_dashboard_smoke.py` — proves the bundled dashboard serves byte identical assets to `octopodas.com/dashboard`.
+
+Anyone can clone and rerun them. 12/12 + 7/7 + 4/5 pass on the latest release.
+
 ## Security
 
 See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
+
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/ryjoxtechnologies-octopoda-os-badge.png)](https://mseep.ai/app/ryjoxtechnologies-octopoda-os)
 
 ## License
 
