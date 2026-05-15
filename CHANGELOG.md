@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.1.11 (2026-05-15)
+
+Patch release immediately after 3.1.10. Closes one critical import bug and three audit follow-ups.
+
+### Critical fix
+- **`audit_v2/api.py` import bug** — the FastAPI fallback path only stubbed `APIRouter`, leaving `Header`, `Depends`, `HTTPException`, `Query` undefined. `from synrix_runtime.audit_v2 import api` raised `NameError` at module load when the `[server]` extra wasn't installed. Cloud server is unaffected (it defines `/v1/auditv2/*` routes inline, not via this router) but any user importing the module directly was hitting it. Now all FastAPI symbols get noop stubs in the fallback.
+
+### Audit follow-ups (3 of the 9 still-open items closed)
+
+- **`recall_similar` fallback advisory** (audit P1 #6) — when results are empty AND the `[ai]` extra isn't installed, the response now carries an `advisory` field directing the caller to `pip install octopoda[ai]`. Previously returned silent `[]` and looked like a true no-match.
+- **Model-unregistered visibility** (audit P2 #5/#11) — `octopoda_loop_status` now adds an `advisory` field when `cost.model in (None, "unknown", "")`. Surfaces that cost signal + v2 budget breaker are inactive until a model is registered, instead of silently no-opping.
+
+### Audit items still open (target next release)
+
+- v1 detector → v2 circuit breaker wiring (`/remember` server-side `/check` consult)
+- Drift sampler actually samples
+- Agent stall detection (heartbeat timeout)
+- `loop_warning` carried into audit rows during red severity
+- `consolidate` handle same-key version churn
+- `OCTOPODA_DATA_DIR` for per-project DBs
+- `octopoda_status` self-test MCP tool
+
 ## 3.1.10 (2026-05-15)
 
 Sync from production `dashboard-perf-100-agents` branch. PyPI was missing files that prod has been running for weeks — most importantly the entire `synrix_runtime/audit_v2/` module (referenced by `cloud_server.py` but not shipped). Anyone self-hosting via `octopoda[server]` would have hit `ImportError` on launch.

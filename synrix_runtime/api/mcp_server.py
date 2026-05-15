@@ -547,6 +547,22 @@ def octopoda_search(agent_id: str, prefix: str, limit: int = 20) -> dict:
 # Semantic Search & Temporal Tools
 # -----------------------------------------------------------------------
 
+def _has_ai_extra() -> bool:
+    """Best-effort probe for the [ai] extra (sentence-transformers + numpy).
+
+    Used to surface a helpful 'install [ai] for semantic search' hint when
+    recall_similar returns empty. Audit finding #6 (May 2026): the tool
+    was silently returning an empty list when no embeddings were available,
+    which made it look like there were no matches when in fact the embedding
+    model wasn't installed.
+    """
+    try:
+        import sentence_transformers  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 @mcp.tool()
 def octopoda_recall_similar(agent_id: str, query: str, limit: int = 10) -> dict:
     """Search an agent's memories by meaning (semantic similarity).
@@ -559,11 +575,23 @@ def octopoda_recall_similar(agent_id: str, query: str, limit: int = 10) -> dict:
     """
     agent = _get_agent(agent_id)
     result, latency = _timed(lambda: agent.search(query, limit=limit))
-    return {
+    response = {
         "count": len(result),
         "items": result,
         "latency_us": latency,
     }
+    # Audit fix: empty results + no [ai] extra installed → surface a clear
+    # advisory instead of silently returning [], so callers don't misread
+    # "no semantic match" as "no matching memories."
+    if len(result) == 0 and not _has_ai_extra():
+        response["advisory"] = (
+            "Semantic search returned no results AND the [ai] extra is not "
+            "installed. Install with `pip install octopoda[ai]` to enable "
+            "embedding-based similarity. Without it, recall_similar falls "
+            "back to keyword/prefix search and may miss semantically-similar "
+            "but lexically-different memories."
+        )
+    return response
 
 
 @mcp.tool()
@@ -909,7 +937,23 @@ def octopoda_loop_status(agent_id: str) -> dict:
     """
     agent = _get_agent(agent_id)
     result, latency = _timed(lambda: agent.get_loop_status())
-    return {"agent_id": agent_id, "loop_status": result, "latency_us": latency}
+    response = {"agent_id": agent_id, "loop_status": result, "latency_us": latency}
+    # Audit fix #11: cost signal + v2 budget breaker silently no-op when
+    # agent.model = "unknown" (the default). Surface this prominently so
+    # users notice the cost-tracking gap instead of assuming protection.
+    try:
+        cost = (result or {}).get("cost") or {}
+        if cost.get("model") in (None, "unknown", ""):
+            response["advisory"] = (
+                "Cost tracking is INACTIVE for this agent (model unregistered). "
+                "Runaway-cost loop signal and the v2 budget breaker both "
+                "silently no-op until you register a model. Set it via "
+                "agent.set_model('claude-sonnet-4-5') or equivalent, then "
+                "the 5th loop signal and the spend cap will activate."
+            )
+    except Exception:
+        pass
+    return response
 
 
 @mcp.tool()

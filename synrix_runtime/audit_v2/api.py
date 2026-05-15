@@ -18,7 +18,18 @@ try:
     from fastapi import APIRouter, Depends, HTTPException, Query, Header
     from fastapi.responses import StreamingResponse, JSONResponse
 except ImportError:  # pragma: no cover
+    # When fastapi isn't installed (pip install octopoda without [server] extra),
+    # define no-op stubs so the module is still importable. Routes won't be
+    # functional but `from synrix_runtime.audit_v2 import api` won't NameError.
     APIRouter = None
+    def _noop(*_a, **_kw):
+        return None
+    Depends = _noop
+    HTTPException = type("HTTPException", (Exception,), {})
+    Query = _noop
+    Header = _noop
+    StreamingResponse = None
+    JSONResponse = None
 
 from . import (
     list_events as _list,
