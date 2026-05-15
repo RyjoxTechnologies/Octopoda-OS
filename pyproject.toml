@@ -114,6 +114,13 @@ where = ["."]
 include = ["octopoda*", "synrix*", "synrix_runtime*"]
 exclude = ["tests*", "archive*", "python-sdk*"]
 
+
+[tool.setuptools.exclude-package-data]
+synrix_runtime = [
+    "dashboard/static/mockups/**",
+    "dashboard/static.backup-*/**",
+]
+
 [tool.setuptools.package-data]
 octopoda = ["py.typed"]
 synrix = ["py.typed"]
