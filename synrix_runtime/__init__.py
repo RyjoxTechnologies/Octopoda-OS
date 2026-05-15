@@ -2,7 +2,7 @@
 Synrix Agent Runtime — Persistent Memory Kernel for AI Agents
 """
 
-__version__ = "3.1.13"
+__version__ = "3.1.14"
 
 from synrix_runtime.api.runtime import AgentRuntime
 
