@@ -261,7 +261,7 @@ def _capture_silent(exc: Exception, op: str = "", **context):
 
 app = FastAPI(
     title="Octopoda Agent Memory API",
-    version="3.1.12",
+    version="3.1.13",
     description="Persistent Memory Kernel for AI Agents. Sub-millisecond crash recovery, shared memory bus, full audit trail.",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -459,6 +459,127 @@ async def _start_auditv2_retention_thread():
                          name="auditv2-retention", daemon=True)
     t.start()
     logger.info("audit_v2 retention thread started (window: %d days)", days)
+
+
+# ---------------------------------------------------------------------------
+# Stall detection — audit §14 #9 fix.
+# Marks agents whose heartbeat hasn't been touched in OCTOPODA_STALL_THRESHOLD_SEC
+# (default 300s = 5 minutes) as state="stalled". Pre-fix, /v1/agents returned
+# state="running" for an agent whose process had silently died hours ago,
+# because heartbeats are written but never timed out server-side.
+# Configurable via:
+#   OCTOPODA_STALL_THRESHOLD_SEC   — how stale a heartbeat must be (default 300)
+#   OCTOPODA_STALL_CHECK_INTERVAL  — how often to scan (default 60)
+# Set EITHER to 0 to disable the detector entirely.
+# ---------------------------------------------------------------------------
+
+def _periodic_stall_detector():
+    """Background thread: scan heartbeats, mark stale agents as state=stalled."""
+    threshold = int(os.environ.get("OCTOPODA_STALL_THRESHOLD_SEC", "300"))
+    interval = int(os.environ.get("OCTOPODA_STALL_CHECK_INTERVAL", "60"))
+    if threshold <= 0 or interval <= 0:
+        return  # disabled
+    # Initial sleep so we don't run during cold-start storm.
+    time.sleep(interval)
+    while True:
+        try:
+            import psycopg2
+            dsn = os.environ.get("DATABASE_URL")
+            if not dsn:
+                time.sleep(interval)
+                continue
+            now = time.time()
+            cutoff = now - threshold
+            conn = psycopg2.connect(dsn)
+            conn.autocommit = True
+            try:
+                cur = conn.cursor()
+                # Find agents whose latest heartbeat is older than cutoff.
+                # `valid_from` is the wall-clock when the row was written —
+                # heartbeats overwrite the same key, so valid_from on the
+                # current row is the last heartbeat time.
+                cur.execute(
+                    """SELECT name, data
+                       FROM nodes
+                       WHERE name LIKE 'runtime:agents:%%:heartbeat'
+                         AND valid_from < %s
+                         AND valid_until IS NULL""",
+                    (cutoff,),
+                )
+                stale_heartbeats = cur.fetchall()
+                stalled_count = 0
+                for name, _data in stale_heartbeats:
+                    # Extract agent_id: 'runtime:agents:<id>:heartbeat'
+                    parts = name.split(":")
+                    if len(parts) < 4 or parts[-1] != "heartbeat":
+                        continue
+                    agent_id = ":".join(parts[2:-1])
+                    canonical = f"runtime:agents:{agent_id}"
+                    # Read current agent record, flip state if not already stalled.
+                    cur.execute(
+                        "SELECT data FROM nodes WHERE name = %s AND valid_until IS NULL",
+                        (canonical,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        continue
+                    try:
+                        record = row[0]
+                        if isinstance(record, str):
+                            record = json.loads(record)
+                        current = (record or {}).get("value", record) or {}
+                        if not isinstance(current, dict):
+                            continue
+                        if current.get("state") == "stalled":
+                            continue  # already marked
+                        # Bump crash_count and set state. We update the JSON
+                        # in place and write it back via the existing nodes
+                        # row. RLS-aware writes go through agent_backend;
+                        # here we deliberately do an out-of-band update
+                        # because we're crossing tenants. Safe because we
+                        # only flip state and don't expose data.
+                        current["state"] = "stalled"
+                        current["stalled_at"] = now
+                        current["stall_reason"] = (
+                            f"heartbeat older than {threshold}s "
+                            f"(last beat: {round(now - current.get('heartbeat', now), 1)}s ago)"
+                        )
+                        current["crash_count"] = int(current.get("crash_count", 0)) + 1
+                        record["value"] = current
+                        cur.execute(
+                            "UPDATE nodes SET data = %s, valid_from = %s "
+                            "WHERE name = %s AND valid_until IS NULL",
+                            (json.dumps(record, default=str), now, canonical),
+                        )
+                        stalled_count += 1
+                    except Exception as e:
+                        logger.debug("stall mark failed for %s: %s", agent_id, e)
+                if stalled_count:
+                    logger.info("stall detector marked %d agent(s) as stalled "
+                                "(threshold: %ds)", stalled_count, threshold)
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning("stall detector iteration failed: %s", e)
+            _capture_silent(e, op="stall_detector")
+        time.sleep(interval)
+
+
+@app.on_event("startup")
+async def _start_stall_detector_thread():
+    """Server-side heartbeat timeout (audit §14 #9 fix)."""
+    import threading
+    threshold = int(os.environ.get("OCTOPODA_STALL_THRESHOLD_SEC", "300"))
+    interval = int(os.environ.get("OCTOPODA_STALL_CHECK_INTERVAL", "60"))
+    if threshold <= 0 or interval <= 0:
+        logger.info("stall detector disabled (threshold=%d, interval=%d)",
+                    threshold, interval)
+        return
+    t = threading.Thread(target=_periodic_stall_detector,
+                         name="stall-detector", daemon=True)
+    t.start()
+    logger.info("stall detector started (threshold=%ds, interval=%ds)",
+                threshold, interval)
 
 
 @app.on_event("startup")
@@ -1366,7 +1487,7 @@ async def health():
         backend_type = getattr(_daemon.backend, 'backend_type', 'unknown')
     return HealthResponse(
         status="ok",
-        version="3.1.12",
+        version="3.1.13",
         backend=backend_type,
         uptime_seconds=time.time() - _boot_time,
     )
@@ -1850,6 +1971,52 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
             _capture_silent(e, op="brain_process_write",
                             tenant_id=tenant_id, agent_id=agent_id)
     _bg_work_pool.submit(_bg_brain_process)
+
+    # Audit fix §14 #3 — wire v1 loop detector -> v2 circuit breaker.
+    # After the write lands, sample current v1 severity; if it's orange or
+    # red, pause the agent (so the next /remember returns 429) AND bump the
+    # v2 circuit_breaker_config.pause_count so /v1/loops/v2/circuit-breaker/status
+    # reflects v1-triggered pauses. Fires in the same bg pool as BrainHub
+    # so it doesn't impact request latency. Idempotent — trip_on_v1_severity
+    # short-circuits if the agent is already paused.
+    def _bg_v1_to_v2_trip():
+        try:
+            status = runtime.get_loop_status() or {}
+            sev = status.get("severity")
+            if sev not in ("orange", "red"):
+                return
+            signals = status.get("signals") or []
+            from synrix_runtime.loop_intel_v2 import circuit_breaker as _cb
+            from synrix_runtime.loop_intel_v2.api import _get_connection as _conn_fn
+            try:
+                conn = _conn_fn()
+            except Exception:
+                # No DB available (e.g. local-mode without Postgres) —
+                # still pause the agent in-process, just skip the v2 row update.
+                from synrix_runtime.monitoring.brain import LoopBreaker
+                LoopBreaker.pause_agent(
+                    tenant_id, agent_id,
+                    reason=f"v1_severity:{sev}:signals={len(signals)}",
+                )
+                return
+            try:
+                _cb.trip_on_v1_severity(
+                    conn, tenant_id, agent_id,
+                    severity=sev,
+                    score=status.get("score") or 0,
+                    signal_count=len(signals),
+                )
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning("v1->v2 trip check failed | tenant=%s agent=%s: %s",
+                           tenant_id, agent_id, e)
+            _capture_silent(e, op="v1_to_v2_trip",
+                            tenant_id=tenant_id, agent_id=agent_id)
+    _bg_work_pool.submit(_bg_v1_to_v2_trip)
 
     # Audit v2 — fire-and-forget. Logs what was actually stored so the
     # audit trail reflects real prod activity, not what was attempted.
@@ -3006,7 +3173,23 @@ async def log_decision(agent_id: str, req: DecisionLogRequest, auth=Depends(veri
     tenant_id = _get_tenant_id(auth)
     runtime = _get_runtime(agent_id, auth)
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(_executor, lambda: runtime.log_decision(req.decision, req.reasoning, req.context))
+    # Capture the return value so we can pull live loop_warning out — audit
+    # fix §12.3 part 2: runtime.log_decision now includes a combined
+    # loop_warning {decision_repeat, live_status} but the audit_v2 stream
+    # was getting only {decision, reasoning} via _audit(). Replay via
+    # /v1/auditv2/events was therefore still blind to the runaway state.
+    decision_data = await loop.run_in_executor(
+        _executor,
+        lambda: runtime.log_decision(req.decision, req.reasoning, req.context),
+    )
+    loop_warning = None
+    try:
+        loop_warning = (decision_data or {}).get("loop_warning")
+    except Exception:
+        pass
+    audit_extra = None
+    if loop_warning:
+        audit_extra = {"loop_warning": loop_warning}
     _audit(
         tenant_id,
         event_type="decision",
@@ -3014,8 +3197,9 @@ async def log_decision(agent_id: str, req: DecisionLogRequest, auth=Depends(veri
         source="api",
         value={"decision": req.decision, "reasoning": req.reasoning},
         outcome="success",
+        extra=audit_extra,
     )
-    return {"agent_id": agent_id, "logged": True}
+    return {"agent_id": agent_id, "logged": True, "loop_warning": loop_warning}
 
 
 # ---------------------------------------------------------------------------

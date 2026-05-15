@@ -57,7 +57,12 @@ class SynrixConfig:
         """Load configuration from environment variables."""
         return cls(
             backend=os.getenv("SYNRIX_BACKEND", "sqlite"),
-            data_dir=os.path.expanduser(os.getenv("SYNRIX_DATA_DIR", "~/.synrix/data")),
+            # Audit fix §14 #8 / P1 #7 — accept OCTOPODA_DATA_DIR for per-project DBs.
+            # SYNRIX_DATA_DIR is kept for backwards compat. OCTOPODA_DATA_DIR wins.
+            data_dir=os.path.expanduser(
+                os.getenv("OCTOPODA_DATA_DIR")
+                or os.getenv("SYNRIX_DATA_DIR", "~/.synrix/data")
+            ),
             sqlite_db_name=os.getenv("SYNRIX_SQLITE_DB", "synrix.db"),
             lattice_file=os.getenv("SYNRIX_LATTICE_FILE", "synrix.lattice"),
             lattice_max_nodes=int(os.getenv("SYNRIX_MAX_NODES", "25000")),

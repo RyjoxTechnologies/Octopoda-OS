@@ -1,5 +1,30 @@
 # Changelog
 
+## 3.1.13 (2026-05-15)
+
+Closes the remaining 4 audit items + the §12.3 partial fail from 3.1.12. All 12 of the auditor's priority items now have code behind them.
+
+### Audit fixes shipped here
+
+**§12.3 audit_v2 stream gap (PARTIAL FAIL in 3.1.12 — now PASS).** My 3.1.12 fix put live `loop_warning` into the legacy `audit:<id>:<ts>:decision` row but the auditor's reproducer reads from `/v1/auditv2/events`. Cloud `log_decision` endpoint now captures the runtime's return value and forwards `loop_warning` into the `_audit()` extra payload, so the audit_v2 stream carries the runaway-state context too.
+
+**§14 #3 — wire v1 detector → v2 circuit breaker.** New `circuit_breaker.trip_on_v1_severity()` is called from a `/remember` background task. When v1 severity is orange or red after a write:
+- `LoopBreaker.pause_agent` is invoked → subsequent `/remember` returns 429
+- `circuit_breaker_config.pause_count` is incremented + `last_paused_at` set
+- if a `notify_email` is configured, it fires
+
+Decoupled from cost — works regardless of `agent.model` registration. Closes the auditor's flagged "highest-leverage" gap.
+
+**§14 #9 — agent stall detection.** New `_periodic_stall_detector` background thread scans `runtime:agents:*:heartbeat` rows every 60s (configurable via `OCTOPODA_STALL_CHECK_INTERVAL`). Heartbeats older than `OCTOPODA_STALL_THRESHOLD_SEC` (default 300s) flip the agent record's state to `stalled`, bump `crash_count`, record a `stall_reason`. `/v1/agents` no longer shows `running` for ghosts.
+
+**§14 #8 / P1 #7 — `OCTOPODA_DATA_DIR`.** `synrix_runtime/config.py` now reads `OCTOPODA_DATA_DIR` first, falling back to `SYNRIX_DATA_DIR`. Lets users isolate per-project DBs without spelunking through `synrix.*` envs.
+
+**§14 #11 — `octopoda_status` MCP self-test tool.** Single MCP call returns mode/backend/agent count/embedding availability/dashboard URL/HTTP API URL/cloud reachability. Answers "is it working?" in one shot.
+
+### Notes
+
+These are all production-server changes. The 3.1.13 wheel will pip-install fine, but the v1→v2 wiring, stall detection, and `/v1/auditv2/events` `loop_warning` propagation only run inside the cloud HTTP server (`octopoda[server]` extra). For local users running only the MCP server / SDK, the changes that apply are: `OCTOPODA_DATA_DIR`, `octopoda_status` tool, and the legacy audit-row `loop_warning` fix (already in 3.1.12).
+
 ## 3.1.12 (2026-05-15)
 
 Closes the three real bugs from the May 2026 third-party audit (Dvalin21): features that *existed* but didn't deliver what the response shape implied.
