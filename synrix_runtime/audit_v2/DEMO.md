@@ -9,12 +9,12 @@ completely separate from the production Octopoda API and dashboard.
 ### On the VPS
 
 ```bash
-# Once - audit-v2 is already at /root/octopoda-audit-v2
-cd /root/octopoda-audit-v2
-set -a; source /root/octopoda/.env; set +a
+# Once - audit-v2 is already at <your-audit-v2-install>
+cd <your-audit-v2-install>
+set -a; source <path-to-your-env-file>; set +a
 export OCTOPODA_API_KEY='sk-octopoda-...'
-export PYTHONPATH=/root/octopoda-audit-v2
-/root/octopoda/venv/bin/python3 -m synrix_runtime.audit_v2.standalone --port 8765
+export PYTHONPATH=<your-audit-v2-install>
+<your-venv>/bin/python3 -m synrix_runtime.audit_v2.standalone --port 8765
 ```
 
 You'll see:
@@ -27,7 +27,7 @@ to the public internet. To reach it from your laptop, tunnel with SSH:
 
 ```bash
 # on your laptop
-ssh -i ~/.ssh/octopoda_deploy -L 8765:127.0.0.1:8765 root@***REDACTED-VPS-IP***
+ssh -i ~/.ssh/<your-ssh-key> -L 8765:127.0.0.1:8765 root@<your-vps-host>
 # then, in your browser:  http://127.0.0.1:8765/
 ```
 
