@@ -10,7 +10,7 @@ Quick start:
     result = agent.recall("key")
 """
 
-__version__ = "3.1.12"
+__version__ = "3.1.13"
 
 # Cloud SDK (the main developer-facing API)
 from synrix.cloud import Octopoda, Agent, OctopodaError, AuthError, RateLimitError

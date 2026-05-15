@@ -170,6 +170,117 @@ def compute_recent_spend(conn, tenant_id: str) -> Dict[str, float]:
     return by_agent
 
 
+def trip_on_v1_severity(conn, tenant_id: str, agent_id: str, severity: str,
+                        score: int = 0, signal_count: int = 0) -> Optional[Dict[str, object]]:
+    """Audit fix §14 #3 / §13.6 — wire v1 loop detector -> v2 breaker.
+
+    When v1 loop_intel_v2 detects severity orange or red for an agent,
+    THIS function:
+      1. calls LoopBreaker.pause_agent so subsequent writes return 429
+      2. bumps circuit_breaker_config.pause_count + last_paused_at
+         (creates a row if one doesn't exist) so /v1/loops/v2/circuit-breaker/status
+         reflects v1-triggered pauses, not just cost-triggered ones
+      3. emails the configured notify_email if set
+
+    Decoupled from cost — works regardless of model registration. Closes
+    the "v1 severity goes red, v2 stays at pause_count=0" gap the May 2026
+    auditor flagged as the highest-leverage missing wiring.
+
+    Returns the action record (or None if severity didn't warrant action).
+    """
+    if severity not in ("orange", "red"):
+        return None
+
+    cur = conn.cursor()
+
+    # Already paused? Idempotent — don't double-increment.
+    try:
+        from synrix_runtime.monitoring.brain import LoopBreaker
+        if LoopBreaker.is_paused(tenant_id, agent_id):
+            return None
+    except Exception:
+        pass
+
+    # Trip the v1 pause (subsequent /remember calls now get 429)
+    paused = False
+    try:
+        from synrix_runtime.monitoring.brain import LoopBreaker
+        LoopBreaker.pause_agent(
+            tenant_id, agent_id,
+            reason=f"v1_severity:{severity}:signals={signal_count}:score={score}",
+        )
+        paused = True
+    except Exception as e:
+        logger.warning("v1->v2 LoopBreaker.pause_agent failed for %s: %s", agent_id, e)
+
+    # Find or create a circuit_breaker_config row so pause_count is visible
+    # via /v1/loops/v2/circuit-breaker/status. We don't enforce a USD
+    # threshold here — this row is just a counter for v1-triggered pauses.
+    notify_email = None
+    config_id = None
+    try:
+        cur.execute(
+            """SELECT id, notify_email FROM circuit_breaker_config
+               WHERE tenant_id = %s AND (agent_id = %s OR agent_id IS NULL)
+               ORDER BY agent_id NULLS LAST LIMIT 1""",
+            (tenant_id, agent_id),
+        )
+        row = cur.fetchone()
+        if row:
+            config_id, notify_email = row
+            cur.execute(
+                """UPDATE circuit_breaker_config
+                   SET pause_count = pause_count + 1,
+                       last_paused_at = now(),
+                       updated_at = now()
+                   WHERE id = %s""",
+                (config_id,),
+            )
+        else:
+            # No config exists. Insert a v1-triggered marker row so the
+            # status endpoint can show this. threshold_usd_per_min=0 + a
+            # special flag lets the cost watcher know not to enforce against
+            # it (cost watcher checks rate vs threshold, never trips on 0).
+            cur.execute(
+                """INSERT INTO circuit_breaker_config
+                   (tenant_id, agent_id, threshold_usd_per_min, enabled,
+                    pause_count, last_paused_at, created_at, updated_at)
+                   VALUES (%s, %s, 0, true, 1, now(), now(), now())
+                   RETURNING id""",
+                (tenant_id, agent_id),
+            )
+            row = cur.fetchone()
+            config_id = row[0] if row else None
+        conn.commit()
+    except Exception as e:
+        logger.warning("v1->v2 circuit_breaker_config update failed for %s: %s", agent_id, e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+    if notify_email and paused:
+        try:
+            _send_alert_email(
+                notify_email, agent_id,
+                spend=0.0, threshold=0.0, tenant_id=tenant_id,
+            )
+        except Exception:
+            pass
+
+    return {
+        "tenant_id": tenant_id,
+        "agent_id": agent_id,
+        "trigger": "v1_severity",
+        "severity": severity,
+        "signal_count": signal_count,
+        "score": score,
+        "paused": paused,
+        "config_id": config_id,
+        "at": time.time(),
+    }
+
+
 def check_tenant(conn, tenant_id: str) -> List[Dict[str, object]]:
     """Run the circuit-breaker check for one tenant.
 

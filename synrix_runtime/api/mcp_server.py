@@ -1099,6 +1099,93 @@ def octopoda_search_filtered(agent_id: str, query: str | None = None,
 
 
 # -----------------------------------------------------------------------
+# Self-test / diagnostic tool (audit §14 #11 / P2 #11)
+# -----------------------------------------------------------------------
+
+@mcp.tool()
+def octopoda_status() -> dict:
+    """One-call diagnostic: is Octopoda actually working?
+
+    Returns mode (local/cloud), backend type, agent count, embedding
+    availability, dashboard URL if running locally. Designed to answer
+    'is it wired up?' in a single call so users don't have to probe
+    individual tools to discover broken plumbing.
+    """
+    info: dict = {"version": "?"}
+
+    # Version
+    try:
+        import synrix_runtime
+        info["version"] = synrix_runtime.__version__
+    except Exception:
+        pass
+
+    # Mode
+    api_key = (os.environ.get("OCTOPODA_API_KEY", "") or "").strip()
+    local_mode_flag = (os.environ.get("OCTOPODA_LOCAL_MODE", "") or "").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+    in_local = local_mode_flag or api_key.lower() in _LOCAL_SENTINELS
+    info["mode"] = "local" if in_local else "cloud"
+    if not in_local and not api_key.startswith("sk-octopoda-"):
+        info["api_key_warning"] = (
+            "OCTOPODA_API_KEY is set but doesn't look like a cloud key "
+            "(should start with 'sk-octopoda-'). Will be routed to local mode."
+        )
+
+    # Data dir (audit §14 #8 — surface where DB actually lives)
+    info["data_dir"] = (
+        os.environ.get("OCTOPODA_DATA_DIR")
+        or os.environ.get("SYNRIX_DATA_DIR")
+        or os.path.expanduser("~/.synrix/data")
+    )
+
+    # Agent count
+    try:
+        if _runtimes:
+            info["agents_registered_this_process"] = list(_runtimes.keys())
+        else:
+            info["agents_registered_this_process"] = []
+    except Exception:
+        info["agents_registered_this_process"] = "(unavailable)"
+
+    # Embedding availability — directly answers "is recall_similar going to work?"
+    info["embeddings_available"] = _has_ai_extra()
+    if not info["embeddings_available"]:
+        info["embeddings_hint"] = "pip install octopoda[ai]"
+
+    # Dashboard
+    try:
+        import urllib.request as _ur
+        _ur.urlopen("http://127.0.0.1:7842/", timeout=0.4).close()
+        info["dashboard_url"] = "http://127.0.0.1:7842"
+    except Exception:
+        info["dashboard_url"] = None
+
+    # Local HTTP API
+    try:
+        import urllib.request as _ur
+        with _ur.urlopen("http://127.0.0.1:8741/health", timeout=0.4) as r:
+            info["http_api_url"] = "http://127.0.0.1:8741"
+            info["http_api_healthy"] = (r.status == 200)
+    except Exception:
+        info["http_api_url"] = None
+        info["http_api_healthy"] = False
+
+    # Cloud reachability (only when in cloud mode)
+    if not in_local:
+        try:
+            import urllib.request as _ur
+            with _ur.urlopen("https://api.octopodas.com/health", timeout=2.0) as r:
+                info["cloud_reachable"] = (r.status == 200)
+        except Exception as e:
+            info["cloud_reachable"] = False
+            info["cloud_error"] = str(e)[:120]
+
+    return info
+
+
+# -----------------------------------------------------------------------
 # Entry point
 # -----------------------------------------------------------------------
 
