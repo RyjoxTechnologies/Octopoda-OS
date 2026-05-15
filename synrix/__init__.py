@@ -9,7 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-__version__ = "3.1.7"
+__version__ = "3.1.8"
 
 import os
 import warnings

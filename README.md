@@ -37,7 +37,7 @@
 
 Octopoda is the missing layer between your AI agents and a working production system. Think of it as the brain stem your agents always needed but never had.
 
-You write your agent however you like. Pure Python, LangChain, CrewAI, AutoGen, OpenAI Agents SDK, MCP. Octopoda sits underneath and quietly handles the boring stuff that makes agents actually usable. Persistent memory that survives every restart. Loop detection that catches a stuck agent in seconds, before it burns through your token budget overnight. A full audit trail of every decision, every memory write, every recovery. A live dashboard that finally lets you see what your agents are doing.
+You write your agent however you like. Pure Python, LangChain, CrewAI, AutoGen, OpenAI Agents SDK, MCP. Octopoda sits underneath and quietly handles the boring stuff that makes agents actually usable. Persistent memory that survives every restart. Loop detection that flags a stuck agent in seconds with structured signals you can wire into your runtime to pause or alert. A full audit trail of every decision, every memory write, every recovery, with a verifiable hash chain available via the audit-v2 API. A live dashboard that finally lets you see what your agents are doing.
 
 It runs locally with one `pip install` and zero infrastructure. When you outgrow that, the same code syncs to the cloud with a single environment variable. No re-architecture, no migration, no lock-in. The whole thing is open source under MIT.
 
@@ -51,9 +51,9 @@ Three things go wrong when AI agents leave your laptop. Octopoda handles all thr
 
 **Agents forget, until they do not.** Every time your process restarts, your agent loses everything it ever knew about the user, the task, and the conversation. Octopoda gives every agent persistent memory that survives restarts, crashes, deployments, and process kills. Memory just works, the way you always assumed it would.
 
-**Agents loop, and silently burn money.** A stuck agent retrying a failing tool call can quietly burn hundreds of dollars in tokens before anyone notices. Octopoda's five signal loop detector catches retry, oscillation, ping pong, reflection, and recall write patterns in seconds, and surfaces exactly which calls caused it.
+**Agents loop, and silently burn money.** A stuck agent retrying a failing tool call can quietly burn hundreds of dollars in tokens before anyone notices. Octopoda's loop detector catches retry, oscillation, ping pong, reflection, and recall write patterns in seconds, and surfaces exactly which calls caused it. Detection is automatic on every write; intervention (auto-pause, spend cap) is opt-in via the v2 circuit-breaker config so the right policy is yours to set, not ours.
 
-**Agents are black boxes, and that is terrifying in production.** Why did it do that? You had no idea, until now. Octopoda logs every decision, every write, every recovery into a hash chained audit trail you can replay, diff, and verify for tamper evidence. Pair it with the live 3D dashboard and you can finally see what your agents are doing in real time.
+**Agents are black boxes, and that is terrifying in production.** Why did it do that? You had no idea, until now. Octopoda logs every decision, every write, every recovery into a replayable audit trail you can diff over time. The dedicated audit-v2 endpoint additionally hash-chains its events (`prev_hash` → `_this_hash`) so you can verify integrity via `GET /v1/auditv2/verify-chain`. Pair it with the live dashboard and you can finally see what your agents are doing in real time.
 
 ---
 
@@ -119,7 +119,7 @@ When you create an `AgentRuntime`, all of this runs in the background, automatic
 | Audit trail         | Every write hashed and chained. Replayable, verifiable.                   |
 | Crash recovery      | Automatic snapshots and heartbeat-based restore.                          |
 | Health scoring      | Continuous performance and memory quality monitoring per agent.           |
-| Drift tracking      | Goal alignment over time, with deviation alerts.                          |
+| Goal tracking       | Set goals and milestones per agent (`agent.set_goal()`).                  |
 
 You don't configure any of it. It just works.
 
@@ -153,7 +153,7 @@ agent.log_decision(
 
 Every `log_decision` automatically captures a memory snapshot at that instant. The audit timeline shows decisions alongside crashes and recoveries, filterable per agent. Built-in similarity check warns you if a decision repeats a recent one.
 
-Each event is hashed and chained (`prev_hash` → `_this_hash`), so the log is tamper-evident. Run `agent.verify_chain()` any time to confirm integrity.
+Events logged via the audit-v2 endpoints (`POST /v1/auditv2/log`, `GET /v1/auditv2/events`) are hashed and chained per agent (`prev_hash` → `_this_hash`). Run `GET /v1/auditv2/verify-chain` to confirm integrity — it returns `ok=true` plus a per-agent breakdown. The legacy `log_decision()` SDK call writes a simpler audit row without the chain; route through the audit-v2 endpoint if you need tamper-evident provenance.
 
 ---
 
@@ -198,7 +198,7 @@ messages = agent_b.read_messages(unread_only=True)
 
 ### Goal Tracking
 
-Set goals and track progress. Integrates with drift detection.
+Set goals and track progress per agent.
 
 ```python
 agent.set_goal("Migrate to PostgreSQL", milestones=["Backup", "Schema", "Migrate", "Validate"])
@@ -411,6 +411,10 @@ pip install octopoda[all]         # Everything (Python 3.10+)
 
 > **Python version note:** the core package supports Python 3.9 and up. The `[mcp]` extra requires Python 3.10+ because the upstream `mcp` library does. If you're on 3.9 and want everything except MCP, use `pip install octopoda[ai,server,nlp]`.
 
+> **Local-mode note:** running without an API key (`pip install octopoda` only) gives you a fully working local install with SQLite at `~/.synrix/data/synrix.db`. The `OCTOPODA_API_KEY` environment variable accepts the sentinels `local`, `offline`, `dev`, `none`, or `YOUR_KEY_HERE` to explicitly force local mode. Real cloud keys start with `sk-octopoda-`; anything else is treated as a local sentinel rather than hung on cloud auth.
+
+> **Updating Claude Code MCP registration:** if you change the `claude mcp add octopoda ...` env vars (for example, swapping from local to cloud), restart the Claude Code window. `/mcp` reconnect alone won't pick up the new env because the child process inherits Claude Code's cached env at startup.
+
 ## Configuration
 
 | Variable                   | Default                  | Description                                  |
@@ -420,7 +424,10 @@ pip install octopoda[all]         # Everything (Python 3.10+)
 | `OCTOPODA_LLM_PROVIDER`    | `none`                   | `openai`, `anthropic`, `ollama`              |
 | `OCTOPODA_OPENAI_API_KEY`  |                          | Your OpenAI key for local fact extraction    |
 | `OCTOPODA_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Local embedding model (33 MB, runs on CPU)   |
-| `SYNRIX_DATA_DIR`          | `~/.synrix/data`         | Local data directory                         |
+| `SYNRIX_DATA_DIR`          | `~/.synrix/data`         | Local data directory (where SQLite + embeddings live) |
+| `OCTOPODA_LOCAL_MODE`      | unset                    | Set to `1` to force local mode regardless of `OCTOPODA_API_KEY` |
+| `SYNRIX_HEARTBEAT_INTERVAL_SEC` | `3`                  | Daemon heartbeat polling interval (raise for low-resource boxes) |
+| `SYNRIX_MAX_VERSIONS_PER_RUNTIME_KEY` | `10`           | Schema-level cap on `runtime:*` / `metrics:*` key versions |
 
 ## Contributing
 

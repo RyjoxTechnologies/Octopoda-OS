@@ -1,5 +1,46 @@
 # Changelog
 
+## 3.1.8 (2026-05-15)
+
+### Local-mode audit response — MCP server gets parity with HTTP API
+
+A detailed third-party audit (May 10, 2026) of Octopoda local-mode found that of 16 MCP tools probed, **6 threw `AttributeError`**, **1 returned silently-wrong results** (`recall_similar` → empty), and **1 reported inconsistent state**. Root cause: `synrix_runtime/api/mcp_server.py` shipped a parallel `_LocalAgentAdapter` that wrapped `AgentRuntime` but never exposed the methods (`get_loop_status`, `get_loop_history`, `memory_health`, `set_goal`, `get_goal`, `update_progress`, `send_message`, `read_messages`, `broadcast`, `forget`, `consolidate`, `related`, `get_context`, `process_conversation`) that `AgentRuntime` itself implements. This release fixes that.
+
+- **`_LocalAgentAdapter` now exposes every method the MCP tools call.** All 6 previously-broken tools (`octopoda_loop_status`, `octopoda_loop_history`, `octopoda_memory_health`, `octopoda_set_goal`, `octopoda_send_message`, `octopoda_read_messages`) return real results.
+- **`recall_similar` now actually does semantic search.** Adapter's `search()` was routing through `rt.search()` (keyword/prefix); now routes through `rt.recall_similar()` (embedding-based). Falls back to keyword search cleanly if the `[ai]` extra isn't installed.
+- **`consolidate()` defaults to `dry_run=False`** in the MCP adapter. The loop-detector signal recommends `consolidate()` as remediation; with `dry_run=True` as the default it was a no-op. Now actually consolidates.
+- **`log_decision.context` accepts `dict | str | None`.** Previously typed as `str | None` but the MCP framework auto-parses JSON-shaped strings into dicts before validation, so the docs literally told you to pass JSON and pydantic rejected it.
+- Added regression suite (`tests/test_mcp_local_adapter.py`, 13 tests) covering every previously-broken tool plus the local sentinel logic.
+
+### Local-mode sentinels — stop hanging on cloud auth for non-keys
+
+Previously the only honored local sentinel was `YOUR_KEY_HERE`. Anything else — including the natural `local`, `offline`, `dev`, `none`, or even empty string when surrounded by whitespace — was passed to the cloud as a real API key and hung for 10s on auth before failing. The audit reported ~30 minutes of debugging caused by this single ambiguity.
+
+- All of `local`, `offline`, `dev`, `none`, `""`, and `YOUR_KEY_HERE` (case-insensitive) are now local-mode sentinels.
+- Honors `OCTOPODA_LOCAL_MODE=1` to force local mode regardless of `OCTOPODA_API_KEY`.
+- Anything that doesn't start with `sk-octopoda-` and isn't a known sentinel falls back to local mode with a clear stderr warning, rather than hanging on cloud auth.
+
+### README — scope claims to what's actually shipped
+
+The audit flagged several README claims as unsubstantiated by the code shipped on the default path. This release scopes them honestly:
+
+- **"Tamper-evident hash chain"** is now scoped explicitly to the audit-v2 endpoints (`POST /v1/auditv2/log`, `GET /v1/auditv2/events`, `GET /v1/auditv2/verify-chain`). The legacy `log_decision()` SDK call writes a simpler audit row without the chain — documented as such.
+- **"Drift tracking / Goal alignment with deviation alerts"** removed. The drift sampler does not currently run; only goal storage is supported. Will be reinstated when the sampler ships.
+- **"5-signal loop engine"** still accurate (retry, oscillation, ping-pong, reflection, recall-write); the cost signal is documented as requiring agent model registration to populate.
+- **"Catches before it burns through the budget overnight"** softened — detection is automatic, intervention is opt-in via the v2 circuit-breaker config.
+- Storage path documented at `~/.synrix/data/synrix.db` (previously the README mentioned `~/.octopoda/`).
+- Added Claude Code MCP env-cache restart caveat.
+
+### Configuration env vars added to README
+
+- `OCTOPODA_LOCAL_MODE` (force local)
+- `SYNRIX_HEARTBEAT_INTERVAL_SEC` (daemon polling cadence)
+- `SYNRIX_MAX_VERSIONS_PER_RUNTIME_KEY` (schema-level version cap)
+
+### Credits
+
+Most of the fixes in this release come from a detailed third-party audit. The auditor methodically exercised every MCP tool, every HTTP endpoint, the local SQLite layer, the dashboard, the v2 circuit-breaker, the drift sampler, and the cloud — including head-to-head comparisons. The result was a 1,400-line report that pinpointed exactly which line in `mcp_server.py` needed to change and why. Thank you for the rigour.
+
 ## 3.1.7 (2026-05-08)
 
 ### Schema-level version cap for runtime/metrics keys

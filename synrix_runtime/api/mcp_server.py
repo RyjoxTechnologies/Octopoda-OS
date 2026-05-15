@@ -198,20 +198,48 @@ class _FastAgent:
         return self._c._get(f"{self._base}/context", {"q": query, "limit": limit, "format": format})
 
 
+_LOCAL_SENTINELS = {"", "YOUR_KEY_HERE", "local", "offline", "dev", "none"}
+
+
 def _get_client():
     """Get or create the Octopoda client (singleton).
-    Uses lightweight HTTP client — no heavy synrix imports."""
+    Uses lightweight HTTP client — no heavy synrix imports.
+
+    Local mode is used when:
+      - OCTOPODA_API_KEY is unset or empty, or
+      - OCTOPODA_API_KEY is one of the local sentinels (local/offline/dev/none/YOUR_KEY_HERE), or
+      - OCTOPODA_LOCAL_MODE is set to a truthy value, or
+      - OCTOPODA_API_KEY doesn't start with `sk-octopoda-` (clearly not a real key)
+
+    Previously only `YOUR_KEY_HERE` was honored, so any other non-empty value
+    (including the natural `local`) silently routed to cloud auth and hung
+    for 10s per call. Reported in the May 2026 audit.
+    """
     global _client, _local_mode
     if _client is not None:
         return _client
 
-    api_key = os.environ.get("OCTOPODA_API_KEY", "")
-    if api_key and api_key != "YOUR_KEY_HERE":
-        _client = _FastClient(api_key)
-        _local_mode = False
-    else:
+    api_key = (os.environ.get("OCTOPODA_API_KEY", "") or "").strip()
+    local_mode_flag = (os.environ.get("OCTOPODA_LOCAL_MODE", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+    if local_mode_flag or api_key.lower() in _LOCAL_SENTINELS:
         _client = _LocalClientAdapter()
         _local_mode = True
+    elif not api_key.startswith("sk-octopoda-"):
+        # Not a sentinel and doesn't look like a real key — warn and fall back
+        # to local mode rather than hanging on cloud auth.
+        import sys
+        sys.stderr.write(
+            f"[octopoda-mcp] OCTOPODA_API_KEY={api_key!r} does not look like a cloud key "
+            f"(expected prefix 'sk-octopoda-'). Using LOCAL mode instead of hanging on cloud auth.\n"
+            f"  To force cloud: set OCTOPODA_API_KEY=sk-octopoda-...\n"
+            f"  To stay local explicitly: OCTOPODA_API_KEY=local or unset the variable.\n"
+        )
+        _client = _LocalClientAdapter()
+        _local_mode = True
+    else:
+        _client = _FastClient(api_key)
+        _local_mode = False
     return _client
 
 
@@ -254,10 +282,99 @@ class _LocalAgentAdapter:
         return []
 
     def search(self, query, limit=10):
-        results = self._rt.search(query, limit=limit)
-        if hasattr(results, 'items'):
-            return results.items
-        return results if isinstance(results, list) else []
+        """Semantic search by meaning (route through recall_similar, NOT prefix search).
+
+        Before: rt.search() did keyword/prefix matching, never hit the embedding
+        index — so octopoda_recall_similar silently returned 0 results even when
+        embeddings were present (reported in the May 2026 audit). Now routes
+        through rt.recall_similar() which calls backend.semantic_search().
+        """
+        try:
+            sr = self._rt.recall_similar(query, limit=limit)
+        except Exception:
+            # Fall back to keyword/prefix search if semantic isn't available
+            # (e.g. the [ai] extra is not installed and no embedding model loaded)
+            sr = self._rt.search(query, limit=limit)
+            if hasattr(sr, "items"):
+                return sr.items
+            return sr if isinstance(sr, list) else []
+
+        # SearchResult shape: .results or .matches or list-like
+        items = getattr(sr, "results", None) or getattr(sr, "matches", None) or sr
+        if isinstance(items, list):
+            return items
+        if hasattr(items, "items"):
+            return items.items
+        return []
+
+    # ── methods previously missing — caused AttributeError on every MCP call ──
+    # The auditor reported 6 tools throwing AttributeError because the MCP
+    # adapter didn't expose these methods. They all exist on AgentRuntime;
+    # here we delegate to that. See issue: May 2026 local-mode audit.
+
+    def forget(self, key):
+        return self._to_dict(self._rt.forget(key)) or {"deleted": False, "key": key}
+
+    def memory_health(self):
+        return self._to_dict(self._rt.memory_health()) or {}
+
+    def consolidate(self, similarity_threshold=0.90, dry_run=False):
+        """Note: dry_run defaults to False here (not True). Auditor flagged
+        that the loop signal recommends consolidate() but the cloud SDK
+        defaulted dry_run=True, so following the recommendation did nothing.
+        For the MCP path we default to actually consolidating."""
+        return self._to_dict(
+            self._rt.consolidate(similarity_threshold=similarity_threshold, dry_run=dry_run)
+        ) or {}
+
+    def get_loop_status(self):
+        return self._to_dict(self._rt.get_loop_status()) or {}
+
+    def get_loop_history(self, hours=24):
+        return self._to_dict(self._rt.get_loop_history(hours=hours)) or {}
+
+    def set_goal(self, goal, milestones=None):
+        return self._to_dict(self._rt.set_goal(goal, milestones=milestones)) or {}
+
+    def get_goal(self):
+        return self._to_dict(self._rt.get_goal()) or {}
+
+    def update_progress(self, progress=None, milestone_index=None, note=None):
+        return self._to_dict(
+            self._rt.update_progress(progress=progress, milestone_index=milestone_index, note=note)
+        ) or {}
+
+    def send_message(self, to_agent, message, message_type="info", **kwargs):
+        return self._to_dict(
+            self._rt.send_message(to_agent, message, message_type=message_type, **kwargs)
+        ) or {}
+
+    def read_messages(self, space="global", unread_only=False, limit=50):
+        return self._rt.read_messages(space=space, unread_only=unread_only, limit=limit)
+
+    def broadcast(self, message, message_type="info", **kwargs):
+        return self._to_dict(self._rt.broadcast(message, message_type=message_type, **kwargs)) or {}
+
+    def get_context(self, query, limit=10, format="text"):
+        # Runtime exposes a richer get_context; if unavailable, return a stub
+        try:
+            return self._to_dict(self._rt.get_context(query, limit=limit, format=format)) or {"context": ""}
+        except Exception:
+            # Fallback for older runtimes
+            return {"context": f"(get_context not available on this runtime; query was: {query})"}
+
+    def process_conversation(self, messages, **kwargs):
+        try:
+            return self._to_dict(self._rt.process_conversation(messages, **kwargs)) or {}
+        except Exception:
+            return {"error": "process_conversation not available on this runtime"}
+
+    def related(self, entity, limit=10):
+        try:
+            return self._rt.related(entity, limit=limit)
+        except Exception:
+            # Fallback to semantic search
+            return self.search(entity, limit=limit)
 
     def write_batch(self, items):
         return self._rt.remember_many(items)
@@ -661,7 +778,8 @@ def octopoda_get_context(agent_id: str, query: str, limit: int = 10) -> dict:
 
 @mcp.tool()
 def octopoda_log_decision(
-    agent_id: str, decision: str, reasoning: str, context: str | None = None
+    agent_id: str, decision: str, reasoning: str,
+    context: "dict | str | None" = None,
 ) -> dict:
     """Log an agent decision with full audit trail.
 
@@ -669,10 +787,22 @@ def octopoda_log_decision(
         agent_id: The agent making the decision
         decision: What was decided ("allow", "deny", or "escalate")
         reasoning: Why this decision was made
-        context: Optional JSON string with additional context
+        context: Optional context. Accepts either a dict OR a JSON string
+                 (the MCP framework auto-parses JSON-shaped strings into
+                 dicts before validation, so the type accepts both).
+
+    Note: previously typed `str | None`, which failed validation when the
+    framework auto-parsed JSON strings into dicts. Reported May 2026 audit.
     """
     agent = _get_agent(agent_id)
-    ctx = _parse_value(context) if context else {}
+    if context is None:
+        ctx: dict = {}
+    elif isinstance(context, dict):
+        ctx = context
+    else:
+        # String — try JSON parse, fall back to {"note": ...} for plain text
+        parsed = _parse_value(context)
+        ctx = parsed if isinstance(parsed, dict) else {"note": context}
     result, latency = _timed(lambda: agent.decide(decision, reasoning, ctx))
     return {
         "agent_id": agent_id,
