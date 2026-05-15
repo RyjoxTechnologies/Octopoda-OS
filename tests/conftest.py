@@ -84,8 +84,13 @@ def agent_runtime(tmp_dir, monkeypatch):
     monkeypatch.setenv("SYNRIX_DATA_DIR", tmp_dir)
 
     from synrix_runtime.core.daemon import RuntimeDaemon
+    from synrix_runtime.api.tenant import TenantManager
     from synrix_runtime.monitoring.metrics import MetricsCollector
     RuntimeDaemon.reset_instance()
+    try:
+        TenantManager.reset_instance()
+    except Exception:
+        pass
     MetricsCollector._instance = None
 
     from synrix_runtime.api.runtime import AgentRuntime
@@ -93,6 +98,10 @@ def agent_runtime(tmp_dir, monkeypatch):
     yield rt
     rt.shutdown()
     RuntimeDaemon.reset_instance()
+    try:
+        TenantManager.reset_instance()
+    except Exception:
+        pass
     MetricsCollector._instance = None
 
 
@@ -104,8 +113,13 @@ def api_client(tmp_dir, monkeypatch):
     monkeypatch.setenv("SYNRIX_AUTH_DISABLED", "1")
 
     from synrix_runtime.core.daemon import RuntimeDaemon
+    from synrix_runtime.api.tenant import TenantManager
     from synrix_runtime.monitoring.metrics import MetricsCollector
     RuntimeDaemon.reset_instance()
+    try:
+        TenantManager.reset_instance()
+    except Exception:
+        pass
     MetricsCollector._instance = None
 
     daemon = RuntimeDaemon.get_instance()
@@ -124,6 +138,10 @@ def api_client(tmp_dir, monkeypatch):
 
     daemon.shutdown()
     RuntimeDaemon.reset_instance()
+    try:
+        TenantManager.reset_instance()
+    except Exception:
+        pass
     MetricsCollector._instance = None
 
 
@@ -134,8 +152,13 @@ def daemon(tmp_dir, monkeypatch):
     monkeypatch.setenv("SYNRIX_DATA_DIR", tmp_dir)
 
     from synrix_runtime.core.daemon import RuntimeDaemon
+    from synrix_runtime.api.tenant import TenantManager
     from synrix_runtime.monitoring.metrics import MetricsCollector
     RuntimeDaemon.reset_instance()
+    try:
+        TenantManager.reset_instance()
+    except Exception:
+        pass
     MetricsCollector._instance = None
 
     d = RuntimeDaemon.get_instance()
@@ -143,4 +166,8 @@ def daemon(tmp_dir, monkeypatch):
     yield d
     d.shutdown()
     RuntimeDaemon.reset_instance()
+    try:
+        TenantManager.reset_instance()
+    except Exception:
+        pass
     MetricsCollector._instance = None

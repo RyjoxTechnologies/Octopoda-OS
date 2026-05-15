@@ -113,13 +113,13 @@ class TestLicenseLoading:
     """Test loading license keys from env and file."""
 
     def test_load_from_env_var(self, monkeypatch):
-        """SYNRIX_LICENSE_KEY env var should be picked up."""
-        monkeypatch.setenv("SYNRIX_LICENSE_KEY", "synrix-license-test")
+        """OCTOPODA_LICENSE_KEY env var should be picked up."""
+        monkeypatch.setenv("OCTOPODA_LICENSE_KEY", "synrix-license-test")
         assert load_license_key() == "synrix-license-test"
 
     def test_load_from_file(self, tmp_dir, monkeypatch):
         """~/.synrix/license.key file should be read as fallback."""
-        monkeypatch.delenv("SYNRIX_LICENSE_KEY", raising=False)
+        monkeypatch.delenv("OCTOPODA_LICENSE_KEY", raising=False)
 
         license_file = os.path.join(tmp_dir, "license.key")
         with open(license_file, "w") as f:
@@ -132,7 +132,7 @@ class TestLicenseLoading:
 
     def test_free_tier_when_no_key(self, monkeypatch):
         """No key set should return free tier claims."""
-        monkeypatch.delenv("SYNRIX_LICENSE_KEY", raising=False)
+        monkeypatch.delenv("OCTOPODA_LICENSE_KEY", raising=False)
         claims = get_current_claims()
         assert claims.tier == "free"
         assert claims.max_agents == 3
@@ -141,14 +141,14 @@ class TestLicenseLoading:
     def test_valid_key_returns_correct_tier(self, monkeypatch):
         """Setting a valid license key should return the correct tier."""
         key = _generate_license_key("pro", "pro@test.com")
-        monkeypatch.setenv("SYNRIX_LICENSE_KEY", key)
+        monkeypatch.setenv("OCTOPODA_LICENSE_KEY", key)
         claims = get_current_claims()
         assert claims.tier == "pro"
         assert claims.max_agents == 25
 
     def test_invalid_key_falls_back_to_free(self, monkeypatch):
         """An invalid license key should fall back to free tier."""
-        monkeypatch.setenv("SYNRIX_LICENSE_KEY", "synrix-license-garbage.garbage")
+        monkeypatch.setenv("OCTOPODA_LICENSE_KEY", "synrix-license-garbage.garbage")
         claims = get_current_claims()
         assert claims.tier == "free"
 
@@ -238,7 +238,7 @@ class TestAgentLimitEnforcement:
 
     def test_free_tier_allows_3_agents(self, agent_ledger, monkeypatch):
         """Free tier: 3 agents OK, 4th raises AgentLimitError."""
-        monkeypatch.delenv("SYNRIX_LICENSE_KEY", raising=False)
+        monkeypatch.delenv("OCTOPODA_LICENSE_KEY", raising=False)
         claims = LicenseClaims(
             tier="free", max_agents=3, max_memories_per_agent=10_000,
             issued_at=0, expires_at=0, subject="",
@@ -253,7 +253,7 @@ class TestAgentLimitEnforcement:
 
         assert exc_info.value.current_count == 3
         assert exc_info.value.max_agents == 3
-        assert "synrix.io/pricing" in str(exc_info.value)
+        assert "octopodas.com/pricing" in str(exc_info.value)
 
     def test_existing_agent_always_allowed(self, agent_ledger):
         """Re-checking an already registered agent should never raise."""
@@ -318,7 +318,7 @@ class TestMemoryLimitEnforcement:
 
         assert exc_info.value.agent_id == "a1"
         assert exc_info.value.current_count == 10_000
-        assert "synrix.io/pricing" in str(exc_info.value)
+        assert "octopodas.com/pricing" in str(exc_info.value)
 
     def test_paid_tier_no_memory_limit(self, agent_ledger):
         """Paid tiers should have no memory limit (max=0 means unlimited)."""

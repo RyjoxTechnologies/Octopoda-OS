@@ -1,7 +1,5 @@
 <p align="center">
-  <video src="https://github.com/RyjoxTechnologies/Octopoda-OS/raw/main/docs/images/octopoda-hero.mp4" autoplay loop muted playsinline width="800">
-    <img src="docs/images/octopoda-hero.jpg" alt="Octopoda" width="800" />
-  </video>
+  <img src="docs/images/octopoda-hero.gif" alt="Octopoda" width="720" />
 </p>
 
 <h1 align="center">🐙 Octopoda</h1>
