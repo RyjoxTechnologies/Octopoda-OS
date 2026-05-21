@@ -70,9 +70,12 @@ class RuntimeDaemon:
         self.backend.write("runtime:system:status", {"value": "running"}, metadata={"type": "system"})
         self.backend.write("runtime:system:agent_count", {"value": 0}, metadata={"type": "system"})
 
-        logger.info("Connected to Octopoda in %.1fus (backend: %s)", connect_us, self.backend.backend_type)
-        logger.info("Boot record written in %.1fus", boot_write_us)
-        logger.info("Daemon running - PID: %s", threading.get_ident())
+        # Demoted to DEBUG (audit 2026-05-21 §1.4/1.5/1.9): internal timings and PID
+        # are operator-level diagnostics, not user-facing info. Set LOG_LEVEL=DEBUG to
+        # restore. Behavior of the daemon itself is unchanged.
+        logger.debug("Connected to Octopoda in %.1fus (backend: %s)", connect_us, self.backend.backend_type)
+        logger.debug("Boot record written in %.1fus", boot_write_us)
+        logger.debug("Daemon running - PID: %s", threading.get_ident())
 
         # Cold-start recovery: run in background thread so API starts immediately
         self._start_thread("cold_start_recovery", self._cold_start_recovery_bg)
@@ -328,7 +331,10 @@ class RuntimeDaemon:
                 # Agents left in 'running' or 'recovering' state from a prior session
                 # are stale — the previous daemon died without cleaning up
                 if state in ("running", "recovering"):
-                    logger.info("Cold-start: recovering stale agent '%s' (was %s)", agent_id, state)
+                    # Demoted to DEBUG (audit §1.3): "recovering stale agent" alarms
+                    # new users with implementation-detail language. Recovery itself
+                    # still runs. Set LOG_LEVEL=DEBUG for the diagnostic.
+                    logger.debug("Cold-start: recovering stale agent '%s' (was %s)", agent_id, state)
                     try:
                         self.backend.write(
                             f"runtime:agents:{agent_id}:state",
@@ -340,7 +346,10 @@ class RuntimeDaemon:
                     except Exception as e:
                         logger.error("Cold-start recovery failed for %s: %s", agent_id, e)
             if recovered > 0:
-                logger.info("Cold-start recovery complete: %d agent(s) restored", recovered)
+                # Demoted to DEBUG (audit §1.3) + fixed plural (audit §2.4):
+                # "1 agent(s)" → "1 agent" / "N agents".
+                _agent_word = "agent" if recovered == 1 else "agents"
+                logger.debug("Cold-start recovery complete: %d %s restored", recovered, _agent_word)
         except Exception as e:
             logger.error("Cold-start recovery error: %s", e, exc_info=True)
         return recovered
@@ -436,7 +445,9 @@ class RuntimeDaemon:
                 return
             gc = GarbageCollector(self.backend, gc_config)
             interval_seconds = gc_config.interval_hours * 3600
-            logger.info(
+            # Demoted to DEBUG (audit §1.6): GC config dump is operator-level diagnostic.
+            # GC itself runs identically.
+            logger.debug(
                 "GC started: interval=%dh, metrics=%dd, events=%dd, audit=%dd, runtime_agents=%dd",
                 gc_config.interval_hours, gc_config.metrics_days,
                 gc_config.events_days, gc_config.audit_days,

@@ -322,6 +322,21 @@ def ensure_authenticated(allow_local: bool = False) -> str:
     # Check for existing key
     key = get_api_key()
     if key:
+        # Additive prefix warning (audit §3.6). Cloud keys start with sk-octopoda-.
+        # Recognised local-mode sentinels are listed in the README and still pass
+        # through unchanged — we only nudge on values that look like neither.
+        # Default behavior is unchanged: the key string is returned as-is.
+        _LOCAL_SENTINELS = ("local", "offline", "dev", "none", "YOUR_KEY_HERE", "")
+        if (not key.startswith("sk-octopoda-")
+                and key not in _LOCAL_SENTINELS
+                and not getattr(ensure_authenticated, "_prefix_hinted", False)):
+            ensure_authenticated._prefix_hinted = True
+            if os.environ.get("OCTOPODA_QUIET", "").strip().lower() not in ("1", "true", "yes"):
+                logger.warning(
+                    "OCTOPODA_API_KEY does not start with 'sk-octopoda-'. "
+                    "Cloud keys always start with that prefix. "
+                    "Running anyway, but cloud requests will likely fail."
+                )
         return key
 
     # Check if we're in an interactive terminal
@@ -336,14 +351,31 @@ def ensure_authenticated(allow_local: bool = False) -> str:
         print()
         return ""
     else:
-        # Non-interactive: log once, not per agent
+        # Non-interactive: log once, not per agent.
+        # Gated behind OCTOPODA_QUIET (audit §1.10/1.11): users who deliberately run
+        # local-mode shouldn't get an upsell every boot. Default behavior unchanged.
         if not getattr(ensure_authenticated, "_warned", False):
             ensure_authenticated._warned = True
-            logger.warning(
-                "No Octopoda API key found. Set OCTOPODA_API_KEY environment variable "
-                "or run interactively to sign up. Running in local mode. "
-                "Sign up free at https://octopodas.com"
-            )
+            if os.environ.get("OCTOPODA_QUIET", "").strip().lower() not in ("1", "true", "yes"):
+                logger.warning(
+                    "No Octopoda API key found. Set OCTOPODA_API_KEY environment variable "
+                    "or run interactively to sign up. Running in local mode. "
+                    "Sign up free at https://octopodas.com"
+                )
+
+        # Helpful nudge if an obvious typo of OCTOPODA_API_KEY is set (audit §3.5).
+        # Only printed once. Safe — no logic change, just a hint.
+        if not getattr(ensure_authenticated, "_typo_hinted", False):
+            ensure_authenticated._typo_hinted = True
+            _TYPOS = ("OCTAPODA_API_KEY", "OCTOPODAS_API_KEY", "OCTOPDA_API_KEY",
+                      "OCTPODA_API_KEY", "OCTOPODE_API_KEY")
+            for _typo in _TYPOS:
+                if os.environ.get(_typo):
+                    logger.warning(
+                        "Found environment variable %s - did you mean OCTOPODA_API_KEY? "
+                        "It is currently being ignored.", _typo
+                    )
+                    break
         return ""
 
 

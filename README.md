@@ -72,8 +72,8 @@ from octopoda import AgentRuntime
 agent = AgentRuntime("my_agent")
 agent.remember("user_pref", "dark mode")
 
-agent.recall("user_pref")
-# still returns 'dark mode' after a restart, a deploy, or a process crash.
+print(agent.recall("user_pref").value)
+# 'dark mode' — still returns after a restart, a deploy, or a process crash.
 ```
 
 That is the entire setup. Your agent now has persistent memory, loop detection, crash recovery, and an audit trail. No config, no Docker, no Redis, no extra services.
@@ -208,6 +208,8 @@ agent.remember("bio", "Alice is a vegetarian living in London")
 results = agent.recall_similar("what does the user eat?")
 # Returns the right memory with a similarity score
 ```
+
+> **Note:** In **cloud mode**, embeddings are computed server-side and this works out of the box. In **local mode**, install the AI extra (`pip install octopoda[ai]`) so the local embedding model (~33 MB) can run. Without it, `recall_similar` returns 0 results in local mode and logs a warning.
 
 ### Agent Messaging
 

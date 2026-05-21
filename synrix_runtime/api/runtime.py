@@ -10,6 +10,7 @@ Usage:
 """
 
 import logging
+import os
 import time
 import json
 import threading
@@ -276,11 +277,16 @@ class AgentRuntime:
             self._is_cloud = backend_override is not None and tenant_id != "_default"
 
         mode = "cloud" if self._is_cloud else "local"
-        logger.info(f"[{agent_id}] Runtime connected in {connect_us:.1f}us | type={agent_type} | mode={mode}")
+        # Demoted to DEBUG (audit §1.4/1.8): connect timing + internal type label are
+        # diagnostic detail, not user-facing info. Behavior unchanged.
+        logger.debug(f"[{agent_id}] Runtime connected in {connect_us:.1f}us | type={agent_type} | mode={mode}")
+        # Local-mode upsell now gated behind OCTOPODA_QUIET (audit §1.10/1.11).
+        # Set OCTOPODA_QUIET=1 (or 'true'/'yes') to suppress. Default behavior unchanged.
         if not self._is_cloud and not getattr(AgentRuntime, "_local_hint_shown", False):
             AgentRuntime._local_hint_shown = True
-            print(f"Octopoda running locally (SQLite). "
-                  f"For cloud sync + dashboard: https://octopodas.com/signup")
+            if os.environ.get("OCTOPODA_QUIET", "").strip().lower() not in ("1", "true", "yes"):
+                print(f"Octopoda running locally (SQLite). "
+                      f"For cloud sync + dashboard: https://octopodas.com/signup")
 
     def remember(self, key: str, value: Any, tags: list = None) -> MemoryResult:
         """Store a memory in Synrix.
@@ -407,7 +413,10 @@ class AgentRuntime:
                         result = extractor.extract(text)
                         self._store_extraction(result, nid, _background=True)
                     else:
-                        logger.info("EntityExtractor.get() returned None — KG extraction skipped for node %s", nid)
+                        # Demoted to DEBUG (audit §1.2): looks like a stack trace to new
+                        # users. KG extraction is opportunistic — falling through is the
+                        # normal path when [nlp] extras aren't installed.
+                        logger.debug("EntityExtractor.get() returned None - KG extraction skipped for node %s", nid)
                 except Exception as e:
                     logger.error("KG entity extraction failed for node %s: %s",
                                  nid, e, exc_info=True)
