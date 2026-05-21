@@ -1616,6 +1616,27 @@ class AgentRuntime:
         if label is None:
             label = f"snap_{int(time.time()*1000000)}"
 
+        # Cloud mode: route through REST API (audit §7.1 fix — applies the
+        # same pattern share/read_shared use as of v3.1.4).
+        # Previously read from self.backend (local SQLite even in cloud mode),
+        # so a cloud-mode snapshot captured 0 cloud keys.
+        if self._cloud_agent is not None:
+            start = time.perf_counter_ns()
+            try:
+                result = self._cloud_agent.snapshot(label) or {}
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                return SnapshotResult(
+                    label=result.get("label", label),
+                    keys_captured=int(result.get("keys_captured", 0) or 0),
+                    latency_us=float(result.get("latency_us", latency_us) or latency_us),
+                    size_bytes=int(result.get("size_bytes", 0) or 0),
+                )
+            except Exception as e:
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                logger.error("Cloud snapshot failed: %s", e)
+                return SnapshotResult(label=label, keys_captured=0,
+                                      latency_us=latency_us, size_bytes=0)
+
         start = time.perf_counter_ns()
 
         # Get all current memory keys
@@ -1655,6 +1676,29 @@ class AgentRuntime:
 
     def restore(self, label: str = None) -> RestoreResult:
         """Restore from a named snapshot or the latest one."""
+        # Cloud mode: route through REST API (audit §7.1 fix — same pattern as
+        # snapshot above). Previously this would not restore cloud memories.
+        if self._cloud_agent is not None:
+            start = time.perf_counter_ns()
+            try:
+                # Cloud client signature is `restore(snapshot_id)`. The server
+                # endpoint accepts the user-supplied label as the snapshot_id.
+                # If label is None, cloud client will treat as latest.
+                result = self._cloud_agent.restore(label or "") or {}
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                return RestoreResult(
+                    label=result.get("label", label or "latest"),
+                    keys_restored=int(result.get("keys_restored", 0) or 0),
+                    recovery_time_us=float(
+                        result.get("recovery_time_us", latency_us) or latency_us
+                    ),
+                )
+            except Exception as e:
+                latency_us = (time.perf_counter_ns() - start) / 1000
+                logger.error("Cloud restore failed: %s", e)
+                return RestoreResult(label=label or "none", keys_restored=0,
+                                     recovery_time_us=latency_us)
+
         start = time.perf_counter_ns()
 
         if label:
