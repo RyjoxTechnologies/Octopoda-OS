@@ -286,7 +286,8 @@ class AgentRuntime:
             AgentRuntime._local_hint_shown = True
             if os.environ.get("OCTOPODA_QUIET", "").strip().lower() not in ("1", "true", "yes"):
                 print(f"Octopoda running locally (SQLite). "
-                      f"For cloud sync + dashboard: https://octopodas.com/signup")
+                      f"For cloud sync + dashboard: run `octopoda-init` "
+                      f"(or sign up at https://octopodas.com)")
 
     def remember(self, key: str, value: Any, tags: list = None) -> MemoryResult:
         """Store a memory in Synrix.

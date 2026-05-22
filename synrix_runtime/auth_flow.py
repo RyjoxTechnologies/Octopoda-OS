@@ -358,9 +358,9 @@ def ensure_authenticated(allow_local: bool = False) -> str:
             ensure_authenticated._warned = True
             if os.environ.get("OCTOPODA_QUIET", "").strip().lower() not in ("1", "true", "yes"):
                 logger.warning(
-                    "No Octopoda API key found. Set OCTOPODA_API_KEY environment variable "
-                    "or run interactively to sign up. Running in local mode. "
-                    "Sign up free at https://octopodas.com"
+                    "No Octopoda API key found. Running in local mode (SQLite). "
+                    "For cloud sync + dashboard, run: octopoda-init  "
+                    "(or sign up free at https://octopodas.com)"
                 )
 
         # Helpful nudge if an obvious typo of OCTOPODA_API_KEY is set (audit §3.5).
@@ -398,6 +398,93 @@ def _cli_login():
         print("  Ready to use Octopoda!")
     else:
         print("  No account configured. Try again with: octopoda-login")
+
+
+def _cli_init():
+    """CLI entry point for `octopoda init` — the recommended onboarding flow.
+
+    Cleaner than `octopoda-login` for first-time users: skips the 3-way
+    signup/login/manual choice menu and offers a single clear path —
+    "paste an API key, or open the signup page in your browser."
+
+    Once the key is validated, it's saved to ~/.octopoda/config.json so the
+    SDK auto-loads it. No env var setup required.
+    """
+    print()
+    print("=" * 60)
+    print("  Octopoda Setup")
+    print("=" * 60)
+    print()
+
+    # If already authenticated, show status and exit gracefully.
+    existing = get_api_key()
+    if existing:
+        print(f"  Already configured.")
+        print(f"  Key:    {existing[:20]}...")
+        print(f"  Config: {CONFIG_FILE}")
+        print()
+        valid = validate_key(existing)
+        print(f"  Key valid: {'Yes' if valid else 'No (expired or revoked)'}")
+        print()
+        if valid:
+            print("  You're ready to go. Try:")
+            print()
+            print("    python -c \"from octopoda import AgentRuntime; "
+                  "a=AgentRuntime('my_agent'); a.remember('hi', 'world'); "
+                  "print(a.recall('hi').value)\"")
+            print()
+            print("  Or to re-login with a different account:")
+            print("    octopoda-login")
+            print()
+        return existing
+
+    # Not yet authenticated — single clear path.
+    print("  Welcome. Let's connect your Octopoda account.")
+    print()
+    print("  Don't have an API key yet?")
+    print("    Sign up free at: https://octopodas.com/signup")
+    print("    (Takes 30 seconds. Then come back and paste your key below.)")
+    print()
+    try:
+        key = input("  Paste your API key (or press Enter to skip): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Cancelled. Octopoda will run in local mode.")
+        return ""
+
+    if not key:
+        print()
+        print("  Skipped. Octopoda will run in local mode (SQLite).")
+        print("  When ready, run: octopoda-init")
+        print()
+        return ""
+
+    if not key.startswith("sk-octopoda-"):
+        print()
+        print("  That doesn't look like an Octopoda API key.")
+        print("  Cloud keys start with 'sk-octopoda-'. Try again with: octopoda-init")
+        print()
+        return ""
+
+    print()
+    print("  Validating key...")
+    if not validate_key(key):
+        print("  Key is invalid or expired. Try again with: octopoda-init")
+        print("  Or get a fresh key at: https://octopodas.com/dashboard/settings")
+        print()
+        return ""
+
+    save_api_key(key)
+    print(f"  [OK] Key saved to {CONFIG_FILE}")
+    print()
+    print("  You're all set. Try this:")
+    print()
+    print("    python -c \"from octopoda import AgentRuntime; "
+          "a=AgentRuntime('my_agent'); a.remember('hi', 'world'); "
+          "print(a.recall('hi').value)\"")
+    print()
+    print("  Your agent will show up live at: https://octopodas.com/dashboard")
+    print()
+    return key
 
 
 def _cli_status():
