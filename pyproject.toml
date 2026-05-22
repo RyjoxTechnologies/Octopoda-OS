@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "octopoda"
-version = "3.2.1"
+version = "3.2.2"
 description = "Persistent Memory Kernel for AI Agents — crash recovery, shared memory, audit trail, real-time dashboard"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -108,6 +108,7 @@ Changelog = "https://github.com/RyjoxTechnologies/Octopoda-OS/blob/main/CHANGELO
 octopoda = "synrix_runtime.start:main"
 octopoda-mcp = "synrix_runtime.api.mcp_server:main"
 octopoda-login = "synrix_runtime.auth_flow:_cli_login"
+octopoda-init = "synrix_runtime.auth_flow:_cli_init"
 
 [tool.setuptools.packages.find]
 where = ["."]

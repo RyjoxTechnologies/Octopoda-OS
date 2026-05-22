@@ -69,16 +69,17 @@ pip install octopoda
 ```python
 from octopoda import AgentRuntime
 
-agent = AgentRuntime("my_agent")
-agent.remember("user_pref", "dark mode")
+agent = AgentRuntime("my_chatbot")
+agent.remember("user_name", "Alice")
 
-print(agent.recall("user_pref").value)
-# 'dark mode' — still returns after a restart, a deploy, or a process crash.
+# kill the process. restart Python. then:
+print(agent.recall("user_name").value)
+# 'Alice' — still there. Survives every restart, deploy, and crash.
 ```
 
 That is the entire setup. Your agent now has persistent memory, loop detection, crash recovery, and an audit trail. No config, no Docker, no Redis, no extra services.
 
-### Want the dashboard?
+### Want the local dashboard?
 
 ```bash
 pip install octopoda[server]
@@ -87,13 +88,28 @@ octopoda
 
 Open **http://localhost:7842** — the same dashboard as the cloud version, running against your local data. No account, no API key.
 
-### Want cloud sync?
+### Want cloud sync + a hosted dashboard?
 
-Free at [octopodas.com](https://octopodas.com). Set the API key, same code, multi-device sync, team access.
+One command after install:
+
+```bash
+octopoda-init
+```
+
+It walks you through: paste an API key (or sign up free at [octopodas.com](https://octopodas.com)), validates it, and saves it to `~/.octopoda/config.json`. No environment variables to set, no shell config to edit. The SDK auto-loads the key on next import.
+
+After `octopoda-init`, the same Python code above writes to the cloud and shows up live at [octopodas.com/dashboard](https://octopodas.com/dashboard).
+
+<details>
+<summary>Prefer environment variables?</summary>
 
 ```bash
 export OCTOPODA_API_KEY=sk-octopoda-...
 ```
+
+Both methods work. The SDK checks the env var first, then the config file.
+
+</details>
 
 ---
 
