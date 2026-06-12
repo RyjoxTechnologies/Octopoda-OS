@@ -60,11 +60,37 @@ Three things go wrong when AI agents leave your laptop. Octopoda handles all thr
 
 ---
 
-## Quick Start
+## Quick Start — memory for your EXISTING agent in 2 lines (new in 3.3)
+
+Already have an agent built on OpenAI, Anthropic, LangChain, CrewAI, AutoGen or MCP?
+You don't change a line of its logic:
 
 ```bash
 pip install octopoda
 ```
+
+```python
+import octopoda
+octopoda.init(api_key="sk-octopoda-...")   # ← that's the whole integration
+```
+
+Octopoda auto-detects your framework, captures what matters from each turn,
+distills it into memories, and injects relevant recall into future calls —
+automatically. Or run any agent script unchanged from the terminal:
+
+```bash
+export OCTOPODA_API_KEY=sk-octopoda-...
+octopoda-run python your_agent.py     # auto-instruments on launch
+octopoda-run doctor                   # checks your key + detected frameworks
+```
+
+Get a free key at [octopodas.com](https://octopodas.com) — your agents and their
+memories appear on a live dashboard ~10 seconds after the first turn.
+
+> Multiple scripts, one shared brain? Set `OCTOPODA_AGENT_ID=my-agent` so they
+> write to the same memory. On slow networks, `OCTOPODA_RECALL_TIMEOUT=5` (seconds).
+
+### Or use the SDK directly (local-first, no account needed)
 
 ```python
 from octopoda import AgentRuntime
@@ -77,7 +103,7 @@ print(agent.recall("user_name").value)
 # 'Alice' — still there. Survives every restart, deploy, and crash.
 ```
 
-That is the entire setup. Your agent now has persistent memory, loop detection, crash recovery, and an audit trail. No config, no Docker, no Redis, no extra services.
+Either way that is the entire setup. Your agent now has persistent memory, loop detection, crash recovery, and an audit trail. No config, no Docker, no Redis, no extra services.
 
 ### Want the local dashboard?
 
