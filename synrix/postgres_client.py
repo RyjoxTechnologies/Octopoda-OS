@@ -237,7 +237,8 @@ class SynrixPostgresClient:
             cur = conn.cursor()
             cur.execute(
                 "SELECT DISTINCT split_part(name, ':', 1) FROM nodes "
-                "WHERE valid_until = 0 LIMIT 100"
+                "WHERE tenant_id = %s AND valid_until = 0 LIMIT 100",
+                (self.tenant_id,)
             )
             return [r[0] for r in cur.fetchall()]
         finally:
@@ -248,8 +249,8 @@ class SynrixPostgresClient:
         try:
             cur = conn.cursor()
             cur.execute(
-                "SELECT COUNT(*) FROM nodes WHERE name LIKE %s AND valid_until = 0",
-                (f"{name}:%",)
+                "SELECT COUNT(*) FROM nodes WHERE tenant_id = %s AND name LIKE %s AND valid_until = 0",
+                (self.tenant_id, f"{name}:%")
             )
             count = cur.fetchone()[0]
             return {"name": name, "count": count}
@@ -264,7 +265,7 @@ class SynrixPostgresClient:
         conn = self._conn()
         try:
             cur = conn.cursor()
-            cur.execute("DELETE FROM nodes WHERE name LIKE %s", (f"{name}:%",))
+            cur.execute("DELETE FROM nodes WHERE tenant_id = %s AND name LIKE %s", (self.tenant_id, f"{name}:%"))
             conn.commit()
             return True
         finally:
@@ -396,9 +397,9 @@ class SynrixPostgresClient:
             cur = conn.cursor()
             cur.execute(
                 "SELECT id, name, data, metadata, valid_from, valid_until "
-                "FROM nodes WHERE name LIKE %s AND valid_until = 0 "
+                "FROM nodes WHERE tenant_id = %s AND name LIKE %s AND valid_until = 0 "
                 "ORDER BY valid_from DESC LIMIT %s",
-                (f"{prefix}%", limit)
+                (self.tenant_id, f"{prefix}%", limit)
             )
             results = []
             for row in cur.fetchall():
@@ -426,11 +427,11 @@ class SynrixPostgresClient:
         try:
             cur = conn.cursor()
             if isinstance(point_id, int):
-                cur.execute("SELECT id, name, data, metadata FROM nodes WHERE id = %s", (point_id,))
+                cur.execute("SELECT id, name, data, metadata FROM nodes WHERE tenant_id = %s AND id = %s", (self.tenant_id, point_id))
             else:
                 cur.execute(
-                    "SELECT id, name, data, metadata FROM nodes WHERE name = %s AND valid_until = 0",
-                    (str(point_id),)
+                    "SELECT id, name, data, metadata FROM nodes WHERE tenant_id = %s AND name = %s AND valid_until = 0",
+                    (self.tenant_id, str(point_id))
                 )
             row = cur.fetchone()
             if not row:
@@ -562,16 +563,16 @@ class SynrixPostgresClient:
                 FROM fact_embeddings fe
                 LEFT JOIN nodes n ON n.tenant_id = fe.tenant_id
                     AND n.name = fe.node_name AND n.valid_until = 0
-                WHERE fe.embedding IS NOT NULL
+                WHERE fe.embedding IS NOT NULL AND fe.tenant_id = %s
                 {prefix_filter}
                 ORDER BY fe.embedding <=> %s::vector
                 LIMIT %s
             """
             # Build params in correct SQL order: score_vec, [prefix], order_vec, limit
             if name_prefix:
-                params = [emb_str, name_prefix + "%", emb_str, limit * 2]
+                params = [emb_str, self.tenant_id, name_prefix + "%", emb_str, limit * 2]
             else:
-                params = [emb_str, emb_str, limit * 2]
+                params = [emb_str, self.tenant_id, emb_str, limit * 2]
             cur.execute(sql, params)
 
             for row in cur.fetchall():
@@ -606,16 +607,16 @@ class SynrixPostgresClient:
                 sql2 = f"""
                     SELECT id, name, data, 1 - (embedding <=> %s::vector) AS score
                     FROM nodes
-                    WHERE embedding IS NOT NULL AND valid_until = 0
+                    WHERE embedding IS NOT NULL AND valid_until = 0 AND tenant_id = %s
                     {prefix_cond}
                     ORDER BY embedding <=> %s::vector
                     LIMIT %s
                 """
                 # Build params in correct SQL order: score_vec, [prefix], order_vec, limit
                 if name_prefix:
-                    params2 = [emb_str, name_prefix + "%", emb_str, remaining * 2]
+                    params2 = [emb_str, self.tenant_id, name_prefix + "%", emb_str, remaining * 2]
                 else:
-                    params2 = [emb_str, emb_str, remaining * 2]
+                    params2 = [emb_str, self.tenant_id, emb_str, remaining * 2]
                 cur.execute(sql2, params2)
 
                 for row in cur.fetchall():
@@ -657,8 +658,8 @@ class SynrixPostgresClient:
             cur = conn.cursor()
             cur.execute(
                 "SELECT id, name, data, valid_from, valid_until "
-                "FROM nodes WHERE name = %s ORDER BY valid_from ASC",
-                (name,)
+                "FROM nodes WHERE tenant_id = %s AND name = %s ORDER BY valid_from ASC",
+                (self.tenant_id, name)
             )
             results = []
             for row in cur.fetchall():
@@ -715,8 +716,8 @@ class SynrixPostgresClient:
             cur = conn.cursor()
             cur.execute(
                 "SELECT id, name, entity_type, mention_count, first_seen, last_seen "
-                "FROM entities WHERE name = %s LIMIT 1",
-                (name,)
+                "FROM entities WHERE tenant_id = %s AND name = %s LIMIT 1",
+                (self.tenant_id, name)
             )
             row = cur.fetchone()
             if not row:
@@ -733,8 +734,8 @@ class SynrixPostgresClient:
         conn = self._conn()
         try:
             cur = conn.cursor()
-            sql = "SELECT id, name, entity_type, mention_count FROM entities WHERE 1=1"
-            params = []
+            sql = "SELECT id, name, entity_type, mention_count FROM entities WHERE tenant_id = %s"
+            params = [self.tenant_id]
             if entity_type:
                 sql += " AND entity_type = %s"
                 params.append(entity_type)
@@ -818,9 +819,9 @@ class SynrixPostgresClient:
                 if only_superseded else ""
             )
             cur.execute(
-                "DELETE FROM nodes WHERE name LIKE %s AND valid_from < %s"
+                "DELETE FROM nodes WHERE tenant_id = %s AND name LIKE %s AND valid_from < %s"
                 + superseded_clause,
-                (f"{prefix}%", cutoff_timestamp)
+                (self.tenant_id, f"{prefix}%", cutoff_timestamp)
             )
             count = cur.rowcount
             conn.commit()
@@ -845,11 +846,11 @@ class SynrixPostgresClient:
             cur = conn.cursor()
             if collection:
                 cur.execute(
-                    "SELECT COUNT(*) FROM nodes WHERE name LIKE %s AND valid_until = 0",
-                    (f"{collection}:%",)
+                    "SELECT COUNT(*) FROM nodes WHERE tenant_id = %s AND name LIKE %s AND valid_until = 0",
+                    (self.tenant_id, f"{collection}:%")
                 )
             else:
-                cur.execute("SELECT COUNT(*) FROM nodes WHERE valid_until = 0")
+                cur.execute("SELECT COUNT(*) FROM nodes WHERE tenant_id = %s AND valid_until = 0", (self.tenant_id,))
             return cur.fetchone()[0]
         finally:
             self._release(conn)
