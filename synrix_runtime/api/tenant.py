@@ -552,8 +552,14 @@ class TenantManager:
                         if str(state) == "deregistered":
                             deregistered.add(aid)
             return len(all_agents - deregistered)
-        except Exception:
-            return 0
+        except Exception as e:
+            # FAIL CLOSED (issue #26): a backend/DB error must NOT silently
+            # report 0 agents. Returning 0 here lets new-agent registration sail
+            # past the plan cap. Propagating makes the get_runtime gate deny the
+            # registration (surfaced as 503), which is the safe outcome.
+            raise RuntimeError(
+                f"count_agents failed for tenant {tenant_id}: {e}"
+            ) from e
 
     def get_tenant_agents(self, tenant_id: str) -> List[dict]:
         """List all agents for a specific tenant."""
@@ -657,7 +663,12 @@ class TenantManager:
         if not tenant:
             return {"error": "Tenant not found"}
 
-        agent_count = self.count_agents(tenant_id)
+        try:
+            agent_count = self.count_agents(tenant_id)
+        except Exception:
+            # Display-only usage stats: don't 500 the dashboard on a transient
+            # backend glitch. Enforcement (get_runtime) still fails closed.
+            agent_count = 0
         memory_count = 0
         try:
             backend = self.get_backend(tenant_id)

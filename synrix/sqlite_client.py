@@ -588,6 +588,44 @@ class SynrixSQLiteClient:
                 for row in rows
             ]
 
+    def get_exact(
+        self,
+        name: str,
+        collection: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch the current (non-invalidated) node with this EXACT name.
+
+        Unlike query_prefix (which LIKE-matches ``name%`` and is meant for
+        search()), this returns only the row whose name equals ``name``, or
+        None. Used by read()/forget existence checks so a lookup for "a:b"
+        never returns a longer sibling like "a:b:c" (issue #18).
+        """
+        if collection is None:
+            collection = "nodes"
+
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT id, name, data, node_type
+                   FROM nodes
+                   WHERE collection = ? AND name = ?
+                     AND (valid_until IS NULL OR valid_until = 0)
+                   ORDER BY version DESC
+                   LIMIT 1""",
+                (collection, name),
+            ).fetchone()
+
+            if not row:
+                return None
+
+            return {
+                "id": row["id"],
+                "payload": {
+                    "name": row["name"],
+                    "data": row["data"],
+                    "type": row["node_type"],
+                },
+            }
+
     def get_point(
         self, collection: str, point_id: Union[int, str]
     ) -> Dict[str, Any]:
@@ -1484,23 +1522,38 @@ class SynrixSQLiteClient:
         cutoff_timestamp: float,
         collection: Optional[str] = None,
         batch_size: int = 500,
+        only_superseded: bool = False,
     ) -> int:
         """Delete nodes matching prefix updated before cutoff_timestamp.
 
         Returns the total number of rows deleted.
+
+        Args:
+            only_superseded: If True, delete ONLY non-current (superseded)
+                versions — rows whose valid_until is set. Current/live rows
+                (valid_until NULL/0) are never touched. Used for the
+                runtime:agents:* prune so the write-once agent records
+                (:profile, :state, :type, :stats, :metadata, :registered_at)
+                and the latest heartbeat survive: deleting a current :state
+                row would resurrect a deregistered agent (issue #19).
         """
         if collection is None:
             collection = "nodes"
         escaped = prefix.replace("%", "\\%").replace("_", "\\_")
         total_deleted = 0
 
+        superseded_clause = (
+            " AND valid_until IS NOT NULL AND valid_until != 0"
+            if only_superseded else ""
+        )
+
         with self._write_lock, self._conn() as conn:
             while True:
                 cursor = conn.execute(
-                    """DELETE FROM nodes WHERE rowid IN (
+                    f"""DELETE FROM nodes WHERE rowid IN (
                         SELECT rowid FROM nodes
                         WHERE collection = ? AND name LIKE ? ESCAPE '\\'
-                          AND updated_at < ?
+                          AND updated_at < ?{superseded_clause}
                         LIMIT ?
                     )""",
                     (collection, escaped + "%", cutoff_timestamp, batch_size),

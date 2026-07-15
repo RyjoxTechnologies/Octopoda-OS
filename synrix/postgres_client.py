@@ -801,13 +801,25 @@ class SynrixPostgresClient:
             self._release(conn)
 
     def delete_by_prefix_before(self, prefix: str, cutoff_timestamp: float,
-                                 collection: str = None, batch_size: int = 500) -> int:
-        """Delete all nodes with prefix older than cutoff. Single SQL statement."""
+                                 collection: str = None, batch_size: int = 500,
+                                 only_superseded: bool = False) -> int:
+        """Delete all nodes with prefix older than cutoff. Single SQL statement.
+
+        When only_superseded is True, only non-current (superseded) versions
+        are deleted — current rows (valid_until = 0) are preserved so
+        write-once agent records and the current :state row survive the
+        runtime:agents:* prune (issue #19).
+        """
         conn = self._conn()
         try:
             cur = conn.cursor()
+            superseded_clause = (
+                " AND valid_until IS NOT NULL AND valid_until <> 0"
+                if only_superseded else ""
+            )
             cur.execute(
-                "DELETE FROM nodes WHERE name LIKE %s AND valid_from < %s",
+                "DELETE FROM nodes WHERE name LIKE %s AND valid_from < %s"
+                + superseded_clause,
                 (f"{prefix}%", cutoff_timestamp)
             )
             count = cur.rowcount

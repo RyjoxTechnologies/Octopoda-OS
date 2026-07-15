@@ -199,6 +199,27 @@ def get_subscription_status(tenant_id: str, email: str) -> dict:
     }
 
 
+# Replay protection: remember recently-processed Stripe event IDs so a captured
+# (validly-signed) event replayed within the 5-minute signature window cannot be
+# processed twice. In-memory + bounded; best-effort across a single process.
+_PROCESSED_EVENT_IDS: "OrderedDict[str, float]" = None
+_PROCESSED_EVENT_MAX = 5000
+
+
+def _already_processed(event_id: str) -> bool:
+    """Return True if event_id was already handled; otherwise record and return False."""
+    global _PROCESSED_EVENT_IDS
+    if _PROCESSED_EVENT_IDS is None:
+        from collections import OrderedDict
+        _PROCESSED_EVENT_IDS = OrderedDict()
+    if event_id in _PROCESSED_EVENT_IDS:
+        return True
+    _PROCESSED_EVENT_IDS[event_id] = time.time()
+    while len(_PROCESSED_EVENT_IDS) > _PROCESSED_EVENT_MAX:
+        _PROCESSED_EVENT_IDS.popitem(last=False)
+    return False
+
+
 def handle_webhook_event(payload: bytes, signature: str) -> dict:
     """Handle a Stripe webhook event.
 
@@ -206,18 +227,27 @@ def handle_webhook_event(payload: bytes, signature: str) -> dict:
     Returns action taken.
     """
     if not STRIPE_WEBHOOK_SECRET:
-        logger.warning("No webhook secret configured, skipping signature verification")
-        import json
-        event = json.loads(payload)
-    else:
-        # Verify webhook signature
-        event = _verify_webhook_signature(payload, signature)
-        if not event:
-            return {"error": "Invalid webhook signature"}
+        # SECURITY: never process an unverified event. Without the signing
+        # secret we cannot prove the payload came from Stripe, so a forged
+        # request could e.g. upgrade an arbitrary tenant. Hard-fail instead.
+        logger.error("STRIPE_WEBHOOK_SECRET not configured — refusing to process "
+                     "unverified webhook event")
+        return {"error": "Webhook secret not configured"}
+
+    # Verify webhook signature
+    event = _verify_webhook_signature(payload, signature)
+    if not event:
+        return {"error": "Invalid webhook signature"}
 
     event_type = event.get("type", "")
     data = event.get("data", {}).get("object", {})
     logger.info("Stripe webhook: %s", event_type)
+
+    # Replay protection: skip events we've already handled in this process.
+    event_id = event.get("id", "")
+    if event_id and _already_processed(event_id):
+        logger.info("Stripe webhook %s already processed — skipping replay", event_id)
+        return {"handled": False, "reason": "duplicate_event", "event_id": event_id}
 
     if event_type == "checkout.session.completed":
         return _handle_checkout_completed(data)

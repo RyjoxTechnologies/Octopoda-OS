@@ -49,9 +49,12 @@ def load_client():
     os.environ["SYNRIX_BACKEND"] = "sqlite"
     os.environ["SYNRIX_DATA_DIR"] = tmp
     os.environ["SYNRIX_AUTH_DISABLED"] = "1"
+    # Auth bypass now requires the real bind (config.api_host) to be loopback.
+    os.environ["SYNRIX_API_HOST"] = "127.0.0.1"
     # Disable rate limiting for load test (all 100 users share one IP in test)
     os.environ["SYNRIX_RATE_LIMIT_RPM"] = "999999"
 
+    os.environ["SYNRIX_HMAC_SECRET"] = "load-test-hmac-secret"
     from synrix.licensing import _generate_license_key, AgentLedger
     key = _generate_license_key("unlimited", "load@test.dev")
     os.environ["SYNRIX_LICENSE_KEY"] = key

@@ -39,6 +39,17 @@ class RecoveryOrchestrator:
         # Step 1: Query all agent memory keys
         s = time.perf_counter_ns()
         memory_keys = self.backend.query_prefix(f"agents:{agent_id}:", limit=500)
+        # Exclude recovery output and snapshots so full_recovery does not
+        # re-ingest its own prior output (unbounded amplification): each run
+        # writes a recovery blob under agents:{id}:recovery:, and the prefix
+        # query above would otherwise nest every prior blob into the next one.
+        # Snapshots are queried separately in Step 2; recovery blobs are pure output.
+        _recovery_prefix = f"agents:{agent_id}:recovery:"
+        _snapshots_prefix = f"agents:{agent_id}:snapshots:"
+        memory_keys = [
+            item for item in memory_keys
+            if not item.get("key", "").startswith((_recovery_prefix, _snapshots_prefix))
+        ]
         step_timings["query_memory_us"] = (time.perf_counter_ns() - s) / 1000
 
         # Step 2: Query all agent snapshots

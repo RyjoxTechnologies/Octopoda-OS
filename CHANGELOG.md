@@ -1,5 +1,37 @@
 # Changelog
 
+## 3.3.5 — Security & correctness release
+
+Fixes a batch of security and correctness issues found in an external audit
+(GitHub issues #18-#30). No breaking API changes.
+
+### Security
+- **License keys can no longer be forged offline** (#24): the package no longer
+  ships a usable signing secret. Without `SYNRIX_HMAC_SECRET`, signed keys
+  fail verification (fail-closed) and signing is refused; parsed tier limits
+  are clamped to the tier, never trusted above it.
+- **Stripe webhook now hard-fails without a configured secret** (#25) instead
+  of processing unsigned events; adds Stripe `event.id` replay dedup.
+- **Batch writes now enforce the tenant plan cap and platform usage metering**
+  (#23), matching the single-write path; removes the cross-tenant offline
+  ledger from the cloud batch path (#26).
+- **Agent-limit check fails closed** on backend error (#26) instead of admitting
+  agents past the cap.
+- **Constant-time comparison** for the admin master key (#27).
+- **/v1/auth/resend-code returns a uniform response** — no account/verification
+  enumeration (#28).
+- **SYNRIX_AUTH_DISABLED** dev bypass now derives its localhost guard from the
+  real bound host, not a separate env var (#30).
+
+### Correctness
+- `recall()` / `read()` do exact-key lookup, not prefix matching (#18).
+- GC no longer deletes live write-once agent records or resurrects deregistered
+  agents; prunes only superseded versions (#19).
+- Recovery no longer re-ingests its own output (#20), labels the newest snapshot
+  correctly (#21), and is single-flight per agent without masking a dead
+  agent's crash (#22).
+- Verification-code brute-force counter is concurrency-safe (#29).
+
 ## 3.1.19 (2026-05-15)
 
 **Two-tier rate limiting.** A single runaway agent on a tenant used to consume the entire tenant's per-minute quota, locking out every other agent on that account until the window reset. After this release, the limiter checks the per-agent bucket first, and only falls back to the tenant ceiling if the agent passes.

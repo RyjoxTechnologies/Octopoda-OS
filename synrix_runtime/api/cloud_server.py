@@ -844,10 +844,16 @@ async def verify_auth(authorization: Optional[str] = Header(None)):
     """Verify API key. Returns tenant info dict or None."""
     auth_disabled = os.environ.get("SYNRIX_AUTH_DISABLED", "").strip() == "1"
     if auth_disabled:
-        # Only allow in local development — refuse if running on a public port
-        bind_host = os.environ.get("SYNRIX_API_HOST", "127.0.0.1")
+        # Only allow in local development — refuse unless the ACTUAL bind address
+        # is verifiably loopback. Derive it from _config.api_host (the value
+        # passed to uvicorn.run), NOT from the SYNRIX_API_HOST env var:
+        # SynrixConfig.from_env() defaults api_host to 0.0.0.0, so an unset or
+        # mismatched env var would otherwise open the bypass on a public
+        # interface. If the true bind cannot be confirmed loopback (e.g. the
+        # server was not initialized), refuse.
+        bind_host = getattr(_config, "api_host", None) if _config is not None else None
         if bind_host not in ("127.0.0.1", "localhost", "::1"):
-            logger.error("SYNRIX_AUTH_DISABLED=1 is NOT allowed when binding to %s — blocking request", bind_host)
+            logger.error("SYNRIX_AUTH_DISABLED=1 is NOT allowed when bound to %s — blocking request", bind_host)
             raise HTTPException(status_code=403, detail="Auth bypass not allowed on public interfaces")
         else:
             return {"tenant_id": "dev", "plan": "pro", "max_agents": 100, "max_memories_per_agent": 100000}
@@ -1081,6 +1087,10 @@ except ImportError:
 _VERIFY_CODE_TTL = 1800  # 30 minutes
 _MAX_VERIFY_ATTEMPTS = 5
 _VERIFY_FILE = os.environ.get("OCTOPODA_VERIFY_FILE", "/var/lib/octopoda/verification_codes.json")
+# Process-wide lock making the read-check-increment-write of a verification
+# code atomic. fcntl.flock (below) guards against other processes; this guards
+# against concurrent threads within this process losing brute-force increments.
+_VERIFY_LOCK = threading.Lock()
 
 def _load_verify_codes() -> dict:
     try:
@@ -1108,32 +1118,34 @@ def _save_verify_codes(codes: dict):
 
 def _generate_verification_code(email: str) -> str:
     code = str(_secrets.randbelow(900000) + 100000)
-    codes = _load_verify_codes()
-    codes[email] = {"code": code, "expires": time.time() + _VERIFY_CODE_TTL, "attempts": 0}
-    _save_verify_codes(codes)
+    with _VERIFY_LOCK:
+        codes = _load_verify_codes()
+        codes[email] = {"code": code, "expires": time.time() + _VERIFY_CODE_TTL, "attempts": 0}
+        _save_verify_codes(codes)
     return code
 
 def _verify_code(email: str, code: str) -> bool:
-    codes = _load_verify_codes()
-    entry = codes.get(email)
-    if not entry:
-        return False
-    if time.time() > entry["expires"]:
+    with _VERIFY_LOCK:
+        codes = _load_verify_codes()
+        entry = codes.get(email)
+        if not entry:
+            return False
+        if time.time() > entry["expires"]:
+            codes.pop(email, None)
+            _save_verify_codes(codes)
+            return False
+        if entry.get("attempts", 0) >= _MAX_VERIFY_ATTEMPTS:
+            codes.pop(email, None)
+            _save_verify_codes(codes)
+            return False
+        if entry["code"] != code:
+            entry["attempts"] = entry.get("attempts", 0) + 1
+            codes[email] = entry
+            _save_verify_codes(codes)
+            return False
         codes.pop(email, None)
         _save_verify_codes(codes)
-        return False
-    if entry.get("attempts", 0) >= _MAX_VERIFY_ATTEMPTS:
-        codes.pop(email, None)
-        _save_verify_codes(codes)
-        return False
-    if entry["code"] != code:
-        entry["attempts"] = entry.get("attempts", 0) + 1
-        codes[email] = entry
-        _save_verify_codes(codes)
-        return False
-    codes.pop(email, None)
-    _save_verify_codes(codes)
-    return True
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -1375,16 +1387,14 @@ async def resend_verification_code(req: ResendCodeRequest):
     from synrix_runtime.api.tenant import TenantManager
     tm = TenantManager.get_instance()
     tenant = tm.get_tenant_by_email(req.email.lower())
-    if not tenant:
-        # Don't reveal if account exists
-        return {"sent": True, "message": "If an account exists, a code has been sent."}
 
-    if tenant.get("verified"):
-        return {"sent": False, "message": "Email already verified."}
+    # Only actually send a code for an existing, unverified account, but never
+    # reveal which case occurred (prevents account/verification-status enumeration).
+    if tenant and not tenant.get("verified"):
+        code = _generate_verification_code(req.email.lower())
+        _send_verification_email(req.email.lower(), tenant.get("first_name", ""), code)
 
-    code = _generate_verification_code(req.email.lower())
-    _send_verification_email(req.email.lower(), tenant.get("first_name", ""), code)
-    return {"sent": True, "message": "Verification code sent."}
+    return {"sent": True, "message": "If an account exists, a code has been sent."}
 
 
 @app.post("/v1/auth/login")
@@ -2138,25 +2148,36 @@ async def flush_enrichment(agent_id: str, auth=Depends(verify_auth)):
 
 @app.post("/v1/agents/{agent_id}/remember/batch", response_model=BatchMemoryResponse)
 async def remember_batch(agent_id: str, req: BatchRememberRequest, auth=Depends(verify_auth)):
+    _validate_agent_id(agent_id)
+    tenant_id = _get_tenant_id(auth)
     runtime = _get_runtime(agent_id, auth, register=True)
+    loop = asyncio.get_event_loop()
     results = []
     for item in req.items:
-        # License enforcement: check memory limit per item
-        try:
-            from synrix.licensing import check_memory_limit, record_memory_written, MemoryLimitError
-            check_memory_limit(agent_id)
-        except MemoryLimitError as e:
-            raise HTTPException(status_code=403, detail=str(e))
-        except Exception:
-            pass
+        _validate_key(item.key)
 
-        loop = asyncio.get_event_loop()
+        # Tenant-scoped memory cap enforcement — identical to remember().
+        # The previous synrix.licensing.check_memory_limit(agent_id) path was
+        # the offline self-hosted ledger (per-agent, stale offline tiers). On
+        # the cloud it silently no-op'd, letting batch writes bypass the plan
+        # cap and platform metering entirely. Enforce the real per-tenant cap
+        # and meter usage per stored item, matching single-write semantics.
+        if tenant_id not in _ADMIN_TENANTS:
+            try:
+                _enforce_tenant_memory_cap(tenant_id)
+            except HTTPException:
+                raise
+            except Exception as e:
+                # Fail open on DB glitch — same policy as remember().
+                logger.warning("tenant memory cap check failed (failing open) | tenant=%s: %s",
+                               tenant_id, e)
+                _capture_silent(e, op="memory_cap_check", tenant_id=tenant_id)
+
         result = await loop.run_in_executor(_executor, lambda k=item.key, v=item.value, t=item.tags: runtime.remember(k, v, tags=t))
 
-        try:
-            record_memory_written(agent_id)
-        except Exception:
-            pass
+        # Track platform free-tier usage, one increment per stored memory
+        # (admin tenants + BYO-key tenants are bypassed inside the helper).
+        _increment_platform_usage(tenant_id)
 
         results.append({
             "key": item.key,

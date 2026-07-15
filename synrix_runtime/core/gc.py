@@ -103,12 +103,18 @@ class GarbageCollector:
         # Heartbeats write ~3x/sec per agent; without GC this prefix becomes
         # the dominant contributor to nodes-table growth (54% in one
         # reported production case before this prune was added).
-        # The daemon only reads the most recent row per key, so 1-day
-        # retention is safe; older versions are pure history nothing reads.
+        # IMPORTANT (issue #19): prune ONLY superseded versions here. The
+        # write-once agent records (:profile, :state, :type, :stats,
+        # :metadata, :registered_at) and the latest heartbeat are current
+        # rows that are not rewritten on a heartbeat cadence, so an age-based
+        # delete would remove live records — and deleting a current :state
+        # row would resurrect a deregistered agent. Superseded
+        # heartbeat/last_active versions (valid_until set) are pure history
+        # nothing reads and are safe to drop.
         if self.config.runtime_agents_days > 0:
             cutoff = now - (self.config.runtime_agents_days * 86400)
             stats["runtime_agents_deleted"] = self.backend.delete_prefix_before(
-                "runtime:agents:", cutoff
+                "runtime:agents:", cutoff, only_superseded=True
             )
 
         # 6. Prune old snapshots (keep latest N per agent)

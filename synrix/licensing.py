@@ -101,17 +101,31 @@ class LicenseClaims:
 # License key parsing & validation
 # ---------------------------------------------------------------------------
 
-# HMAC verification secret — loaded from environment variable at call time.
-# Set SYNRIX_HMAC_SECRET in production (must match the signing secret).
-_DEFAULT_HMAC_SECRET = b"synrix-hmac-verify-k8x92mPqR7nL4wB6yT1"
-
-
-def _get_verify_secret() -> bytes:
-    """Get the HMAC verification secret from environment or default."""
+# HMAC signing/verification secret — loaded from the environment at call time.
+# There is deliberately NO shipped default: a hardcoded constant would let
+# anyone forge license keys. When SYNRIX_HMAC_SECRET is unset, verification
+# fails closed (no signed key is trusted) and signing is refused.
+def _get_verify_secret() -> Optional[bytes]:
+    """Return the HMAC secret from the environment, or None if unset."""
     env_val = os.environ.get("SYNRIX_HMAC_SECRET", "").strip()
     if env_val:
         return env_val.encode("utf-8")
-    return _DEFAULT_HMAC_SECRET
+    return None
+
+
+def _clamp_to_tier(claimed: int, tier_limit: int) -> int:
+    """Clamp a claimed limit to the tier's limit (0 = unlimited).
+
+    Never returns a value granting more than the tier allows, so a forged or
+    tampered payload cannot escalate limits above its tier.
+    """
+    if tier_limit == 0:
+        # Tier is unlimited; honour the (possibly lower) claim as-is.
+        return claimed
+    if claimed <= 0:
+        # Claim says "unlimited" but the tier caps it.
+        return tier_limit
+    return min(claimed, tier_limit)
 
 
 def parse_license_key(key: str) -> Optional[LicenseClaims]:
@@ -131,9 +145,15 @@ def parse_license_key(key: str) -> Optional[LicenseClaims]:
 
         payload_b64, sig_b64 = parts
 
+        secret = _get_verify_secret()
+        if secret is None:
+            # No signing secret configured — cannot verify authenticity.
+            # Fail closed rather than trusting a shipped constant.
+            return None
+
         # Verify HMAC signature
         expected_sig = hmac.new(
-            _get_verify_secret(),
+            secret,
             payload_b64.encode("utf-8"),
             hashlib.sha256,
         ).digest()
@@ -159,12 +179,16 @@ def parse_license_key(key: str) -> Optional[LicenseClaims]:
         if tier not in TIER_LIMITS:
             return None
 
+        tier_max_agents = TIER_LIMITS[tier]["max_agents"]
+        tier_max_memories = TIER_LIMITS[tier]["max_memories_per_agent"]
         return LicenseClaims(
             tier=tier,
-            max_agents=payload.get("max_agents", TIER_LIMITS[tier]["max_agents"]),
-            max_memories_per_agent=payload.get(
-                "max_memories_per_agent",
-                TIER_LIMITS[tier]["max_memories_per_agent"],
+            max_agents=_clamp_to_tier(
+                payload.get("max_agents", tier_max_agents), tier_max_agents
+            ),
+            max_memories_per_agent=_clamp_to_tier(
+                payload.get("max_memories_per_agent", tier_max_memories),
+                tier_max_memories,
             ),
             issued_at=payload.get("iat", 0),
             expires_at=exp,
@@ -192,11 +216,18 @@ def _generate_license_key(tier: str, email: str, expires_days: int = 0) -> str:
         "sub": email,
     }
 
+    secret = _get_verify_secret()
+    if secret is None:
+        raise LicenseError(
+            "SYNRIX_HMAC_SECRET is not set; refusing to sign a license key. "
+            "Set SYNRIX_HMAC_SECRET to an explicit signing secret first."
+        )
+
     payload_json = json.dumps(payload, separators=(",", ":"))
     payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).rstrip(b"=").decode()
 
     sig = hmac.new(
-        _get_verify_secret(),
+        secret,
         payload_b64.encode("utf-8"),
         hashlib.sha256,
     ).digest()

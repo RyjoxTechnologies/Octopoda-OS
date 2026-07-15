@@ -67,6 +67,7 @@ def agent_ledger(tmp_dir):
 def _unlimited_license(monkeypatch):
     """Generate and set an unlimited license key for all tests."""
     from synrix.licensing import _generate_license_key, AgentLedger
+    monkeypatch.setenv("SYNRIX_HMAC_SECRET", "test-hmac-secret-do-not-ship")
     key = _generate_license_key("unlimited", "test@octopoda.dev")
     monkeypatch.setenv("SYNRIX_LICENSE_KEY", key)
     yield
@@ -111,6 +112,8 @@ def api_client(tmp_dir, monkeypatch):
     monkeypatch.setenv("SYNRIX_BACKEND", "sqlite")
     monkeypatch.setenv("SYNRIX_DATA_DIR", tmp_dir)
     monkeypatch.setenv("SYNRIX_AUTH_DISABLED", "1")
+    # Auth bypass now requires the real bind (config.api_host) to be loopback.
+    monkeypatch.setenv("SYNRIX_API_HOST", "127.0.0.1")
 
     from synrix_runtime.core.daemon import RuntimeDaemon
     from synrix_runtime.api.tenant import TenantManager

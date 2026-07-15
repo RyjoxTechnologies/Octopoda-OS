@@ -57,7 +57,7 @@ class APIKeyManager:
             raw_key = raw_key[7:]
 
         # Check against master key (env var)
-        if self.master_key and raw_key == self.master_key:
+        if self.master_key and secrets.compare_digest(raw_key, self.master_key):
             return APIKeyInfo(
                 key_id="master",
                 tenant_id="default",

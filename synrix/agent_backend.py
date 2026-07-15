@@ -285,9 +285,26 @@ class SynrixAgentBackend:
         Returns:
             Dict with data, or None if not found
         """
-        results = self.query_prefix(key, limit=1)
-        if results:
-            return results[0]
+        # Exact-key lookup — NOT a prefix scan. query_prefix() does a
+        # LIKE key% match and would return a *different*, longer sibling key
+        # (e.g. reading "agents:a1:goal" could return "agents:a1:goal_history").
+        # See issue #18.
+        get_exact = getattr(self.client, "get_exact", None)
+        if get_exact is not None:
+            try:
+                result = get_exact(name=key, collection=self.collection)
+            except Exception as e:
+                logger.warning(f"Failed to read from SYNRIX ({self.backend_type}): {e}")
+                return None
+            if not result:
+                return None
+            return self._parse_result(result)
+
+        # Backends without a native exact-get: fall back to a prefix scan
+        # and filter to the exact key so we never return a longer sibling.
+        for entry in self.query_prefix(key, limit=100):
+            if entry.get("key") == key:
+                return entry
         return None
 
     def get_by_id(self, node_id: int) -> Optional[Dict[str, Any]]:
@@ -307,6 +324,29 @@ class SynrixAgentBackend:
                 pass
         return None
 
+    def _parse_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert a raw backend row into the {key,data,id,score,...} shape."""
+        payload = result.get("payload", {})
+        data_str = payload.get("data", "{}")
+        try:
+            data = json.loads(data_str)
+        except (json.JSONDecodeError, TypeError):
+            data = {"value": data_str}
+        entry = {
+            "key": payload.get("name", ""),
+            "data": data,
+            "id": result.get("id"),
+            "score": result.get("score", 0.0),
+        }
+        # Preserve metadata and temporal fields from backends that provide them
+        if "metadata" in result:
+            entry["metadata"] = result["metadata"]
+        if "valid_from" in result:
+            entry["valid_from"] = result["valid_from"]
+        if "valid_until" in result:
+            entry["valid_until"] = result["valid_until"]
+        return entry
+
     def query_prefix(self, prefix: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
         Query by prefix (O(k) semantic search).
@@ -325,33 +365,7 @@ class SynrixAgentBackend:
                 limit=limit
             )
             # Parse JSON data from results
-            parsed = []
-            for result in results:
-                payload = result.get("payload", {})
-                data_str = payload.get("data", "{}")
-                try:
-                    data = json.loads(data_str)
-                    entry = {
-                        "key": payload.get("name", ""),
-                        "data": data,
-                        "id": result.get("id"),
-                        "score": result.get("score", 0.0),
-                    }
-                except json.JSONDecodeError:
-                    entry = {
-                        "key": payload.get("name", ""),
-                        "data": {"value": data_str},
-                        "id": result.get("id"),
-                        "score": result.get("score", 0.0),
-                    }
-                # Preserve metadata and temporal fields from backends that provide them
-                if "metadata" in result:
-                    entry["metadata"] = result["metadata"]
-                if "valid_from" in result:
-                    entry["valid_from"] = result["valid_from"]
-                if "valid_until" in result:
-                    entry["valid_until"] = result["valid_until"]
-                parsed.append(entry)
+            parsed = [self._parse_result(result) for result in results]
             return parsed
         except Exception as e:
             logger.warning(f"Failed to query SYNRIX ({self.backend_type}): {e}")
@@ -629,14 +643,23 @@ class SynrixAgentBackend:
                 return False
         return False
 
-    def delete_prefix_before(self, prefix: str, cutoff_timestamp: float) -> int:
-        """Delete keys matching prefix updated before cutoff. Returns count deleted."""
+    def delete_prefix_before(self, prefix: str, cutoff_timestamp: float,
+                             only_superseded: bool = False) -> int:
+        """Delete keys matching prefix updated before cutoff. Returns count deleted.
+
+        Args:
+            only_superseded: If True, prune ONLY non-current (superseded)
+                versions, never a current/live row. Used for the
+                runtime:agents:* prune so write-once agent records and the
+                current :state row are preserved (issue #19).
+        """
         if hasattr(self.client, 'delete_by_prefix_before'):
             try:
                 return self.client.delete_by_prefix_before(
                     prefix=prefix,
                     cutoff_timestamp=cutoff_timestamp,
                     collection=self.collection,
+                    only_superseded=only_superseded,
                 )
             except Exception:
                 return 0

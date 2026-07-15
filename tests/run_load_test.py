@@ -19,8 +19,10 @@ tmp = tempfile.mkdtemp(prefix="octopoda_load_")
 os.environ["SYNRIX_BACKEND"] = "sqlite"
 os.environ["SYNRIX_DATA_DIR"] = tmp
 os.environ["SYNRIX_AUTH_DISABLED"] = "1"
+os.environ["SYNRIX_API_HOST"] = "127.0.0.1"
 os.environ["SYNRIX_RATE_LIMIT_RPM"] = "999999"
 
+os.environ["SYNRIX_HMAC_SECRET"] = "load-test-hmac-secret"
 from synrix.licensing import _generate_license_key
 os.environ["SYNRIX_LICENSE_KEY"] = _generate_license_key("unlimited", "load@test.dev")
 
