@@ -230,7 +230,7 @@ agent.log_decision(
 
 Every `log_decision` captures a memory snapshot at that instant, and a built-in similarity check warns you when a decision repeats a recent one. The timeline shows decisions alongside crashes and recoveries, filterable per agent.
 
-For tamper-evident provenance, write through the audit-v2 endpoints (`POST /v1/auditv2/log`, `GET /v1/auditv2/events`). Those events are hashed and chained per agent (`prev_hash` → `_this_hash`); `GET /v1/auditv2/verify-chain` returns `ok=true` plus a per-agent breakdown. The legacy `log_decision()` call writes a simpler row without the chain — route through audit-v2 when you need verifiable integrity.
+For tamper-evident provenance, write through the audit-v2 endpoints (`POST /v1/auditv2/event`, `GET /v1/auditv2/events`). Those events are hashed and chained per agent (`prev_hash` → `_this_hash`); `GET /v1/auditv2/verify-chain` returns `ok=true` plus a per-agent breakdown. The legacy `log_decision()` call writes a simpler row without the chain — route through audit-v2 when you need verifiable integrity.
 
 ---
 

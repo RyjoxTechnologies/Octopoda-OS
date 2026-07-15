@@ -16,6 +16,17 @@ import secrets
 import pytest
 import tempfile
 
+# These E2E tests exercise the real multi-tenant cloud server, which needs the
+# [server] extra (FastAPI) and a live PostgreSQL. Skip cleanly when either is
+# missing rather than erroring during collection — the multi-tenant registry has
+# no SQLite fallback, so run them with: pip install -e .[server] and DATABASE_URL set.
+pytest.importorskip("fastapi", reason="tenant-isolation E2E tests need the [server] extra")
+if not os.environ.get("DATABASE_URL"):
+    pytest.skip(
+        "Tenant-isolation E2E tests require a live PostgreSQL (set DATABASE_URL).",
+        allow_module_level=True,
+    )
+
 from fastapi.testclient import TestClient
 
 # Unique suffix per test run to avoid stale account collisions
