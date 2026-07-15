@@ -401,3 +401,73 @@ def stream_events():
             "X-Accel-Buffering": "no",
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# /v1 compatibility layer — the current octopodas.com dashboard bundle speaks
+# the cloud API's /v1/* routes. Locally there is no auth and no billing, so
+# auth endpoints return a local pseudo-identity and plan/settings endpoints
+# return sensible local defaults. Data routes alias the /api handlers above.
+# ---------------------------------------------------------------------------
+from flask import redirect
+
+_LOCAL_KEY = "sk-octopoda-local-mode"
+
+@api.route("/v1/auth/login", methods=["POST"])
+@api.route("/v1/auth/signup", methods=["POST"])
+def v1_auth_local():
+    body = request.get_json(silent=True) or {}
+    return jsonify({
+        "success": True, "api_key": _LOCAL_KEY, "tenant_id": "local",
+        "email": body.get("email", "local@localhost"), "verified": True,
+        "plan": "local", "first_name": body.get("first_name", "Local"),
+        "last_name": body.get("last_name", "User"),
+    })
+
+@api.route("/v1/auth/me")
+def v1_me():
+    return jsonify({"tenant_id": "local", "email": "local@localhost",
+                    "plan": "local", "verified": True, "company": "Local mode"})
+
+@api.route("/v1/usage")
+def v1_usage():
+    return jsonify({"memories": {"used": 0, "limit": 999999},
+                    "agents": {"used": 0, "limit": 999999}})
+
+@api.route("/v1/settings", methods=["GET", "PUT"])
+def v1_settings():
+    return jsonify({"llm_provider": "local", "updated": request.method == "PUT"})
+
+def _alias(view_name):
+    def _fn(**kw):
+        endpoint = api.name + "." + view_name
+        from flask import current_app
+        view = current_app.view_functions.get(endpoint)
+        return view(**kw) if view else (jsonify({"error": "not available locally"}), 404)
+    return _fn
+
+_V1_MAP = {
+    "/v1/agents": "list_agents",
+    "/v1/agents/<agent_id>": "agent_detail",
+    "/v1/agents/<agent_id>/metrics": "agent_metrics",
+    "/v1/anomalies": "anomalies",
+    "/v1/metrics/system": "system_metrics",
+    "/v1/metrics/timeseries": "metrics_timeseries",
+    "/v1/audit/timeline": "audit_timeline",
+    "/v1/recovery/history": "recovery_history",
+    "/v1/shared": "shared_spaces",
+    "/v1/shared/<space>": "shared_space_detail",
+}
+for _path, _view in _V1_MAP.items():
+    try:
+        api.add_url_rule(_path, endpoint="v1_" + _view, view_func=_alias(_view))
+    except Exception:
+        pass
+
+@api.route("/v1/<path:rest>", methods=["GET", "POST", "PUT", "DELETE"])
+def v1_fallback(rest):
+    # Unknown cloud-only endpoints (billing, loops v2 config, brain extras):
+    # return an empty-but-valid shape so dashboard panels show empty states
+    # instead of error toasts in local mode.
+    return jsonify({"local_mode": True, "items": [], "events": [],
+                    "history": [], "guards": [], "anomalies": []})

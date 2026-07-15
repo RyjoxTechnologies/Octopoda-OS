@@ -1,0 +1,1 @@
+import{bH as a,b3 as e}from"./index-RsFqQstg.js";const r=a((s,i)=>({settings:null,loading:!1,bannerDismissed:!1,dismissBanner:()=>s({bannerDismissed:!0}),fetchSettings:async()=>{try{const t=await e("/v1/settings");s({settings:t})}catch{}},updateSettings:async t=>{await e("/v1/settings",{method:"PUT",body:JSON.stringify(t)})}}));export{r as u};
