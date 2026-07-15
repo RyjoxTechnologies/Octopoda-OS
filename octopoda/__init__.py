@@ -149,6 +149,28 @@ __all__ = [
 ]
 
 
+# --- Zero-friction auto-instrumentation (3.3.0) ----------------------------
+# Lazy re-exports (PEP 562): `import octopoda; octopoda.init(api_key=...)`
+# auto-detects LangChain/CrewAI/AutoGen/OpenAI/Anthropic/MCP and wires memory
+# capture + recall injection. Lazy so plain `import octopoda` is unchanged for
+# existing SDK users (no extra import cost, no behavior change).
+_ZF_LAZY = {
+    "init": "octopoda_zf",
+    "uninstall": "octopoda_zf",
+    "InitResult": "octopoda_zf",
+    "audit_chain": "octopoda_zf",
+    "procedural": "octopoda_zf",
+}
+
+
+def __getattr__(name):
+    mod = _ZF_LAZY.get(name)
+    if mod is not None:
+        import importlib
+        return getattr(importlib.import_module(mod), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 # v3.1.4: re-export modern LangChain integration (recommended over LangChainMemory)
 try:
     from synrix.integrations.langchain import OctopodaChatHistory  # noqa: F401

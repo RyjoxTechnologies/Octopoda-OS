@@ -106,13 +106,14 @@ Changelog = "https://github.com/RyjoxTechnologies/Octopoda-OS/blob/main/CHANGELO
 
 [project.scripts]
 octopoda = "synrix_runtime.start:main"
+octopoda-run = "octopoda_zf.cli.run:main"
 octopoda-mcp = "synrix_runtime.api.mcp_server:main"
 octopoda-login = "synrix_runtime.auth_flow:_cli_login"
 octopoda-init = "synrix_runtime.auth_flow:_cli_init"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["octopoda*", "synrix*", "synrix_runtime*"]
+include = ["octopoda*", "octopoda_zf*", "synrix*", "synrix_runtime*"]
 exclude = ["tests*", "archive*", "python-sdk*"]
 
 
