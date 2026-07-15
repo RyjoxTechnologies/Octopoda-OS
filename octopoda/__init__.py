@@ -10,7 +10,12 @@ Quick start:
     result = agent.recall("key")
 """
 
-__version__ = "3.2.2"
+try:
+    from importlib.metadata import version as _pkg_version
+
+    __version__ = _pkg_version("octopoda")
+except Exception:  # pragma: no cover - source checkout without install metadata
+    from synrix import __version__ as __version__
 
 # Cloud SDK (the main developer-facing API)
 from synrix.cloud import Octopoda, Agent, OctopodaError, AuthError, RateLimitError
